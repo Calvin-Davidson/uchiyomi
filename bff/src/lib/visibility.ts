@@ -56,6 +56,12 @@ export interface ViewCtx {
    * read it from here (see `sourceRatedAdult`): this copy is the 18+ switch's, loaded only while it hides.
    */
   readonly adultSources: readonly string[];
+  /**
+   * Private libraries this viewer may not see: ones another account owns (`libraries.owner_id`). An admin is kept out
+   * only of those owned by another ADMIN; a member, of every one they do not own. Applied by `visible()` on top of
+   * `libraryIds`, so a grant row never opens someone else's private library. Empty for background work.
+   */
+  readonly hiddenLibraryIds: readonly string[];
 }
 
 /**
@@ -77,6 +83,7 @@ export class Params {
 export function visible(alias: string, ctx: ViewCtx, p: Params): string {
   const parts = [`${alias}.deleted_at IS NULL`, `${alias}.merged_into IS NULL`];
   if (ctx.libraryIds) parts.push(`${alias}.library_id = ANY(${p.add([...ctx.libraryIds])})`);
+  if (ctx.hiddenLibraryIds?.length) parts.push(`NOT (${alias}.library_id = ANY(${p.add([...ctx.hiddenLibraryIds])}))`);
   if (ctx.maxAgeRating !== null) {
     // The admin's override wins over what the scan read, like every other piece of series metadata. This is
     // a correlated subquery rather than a join because `visible()` is applied wherever `lib_series` appears
@@ -126,8 +133,40 @@ export const SYSTEM_CTX: ViewCtx = {
   userId: null, libraryIds: null, maxAgeRating: null,
   // Background work and admin reporting count what is there, not what someone wants on screen.
   hideAdultLibraries: false,
-  adultGenres: [], adultSources: [],
+  adultGenres: [], adultSources: [], hiddenLibraryIds: [],
 };
+
+/**
+ * Which private libraries one account may not see, and which it owns, from every private library's owner.
+ *
+ * A private library is its owner's alone. Other admins still see it -- they run the server -- unless the owner is an
+ * admin too, in which case it is that admin's alone. An owner whose account is gone counts as a member: admins see
+ * the library and can give it to someone else, members do not. Pure, so the rule is testable without a database.
+ */
+export function privateLibrarySplit(
+  rows: readonly { id: string; owner_id: string; owner_admin: boolean }[],
+  userId: string,
+  isAdmin: boolean,
+): { hidden: string[]; owned: string[] } {
+  const hidden: string[] = [];
+  const owned: string[] = [];
+  for (const r of rows) {
+    if (r.owner_id === userId) owned.push(r.id);
+    else if (!isAdmin || r.owner_admin) hidden.push(r.id);
+  }
+  return { hidden, owned };
+}
+
+/** Every private library with its owner, for `privateLibrarySplit`. Not caught: see viewCtxFor. */
+export const privateLibraries = () => q<{ id: string; owner_id: string; owner_admin: boolean }>(
+  `SELECT l.id, l.owner_id::text AS owner_id, COALESCE(u.role = 'admin', false) AS owner_admin
+     FROM libraries l LEFT JOIN users u ON u.id = l.owner_id
+    WHERE l.owner_id IS NOT NULL`);
+
+/** The private libraries hidden from this account (admin routes, which do not build a ViewCtx). */
+export async function hiddenLibrariesFor(userId: string, role: string): Promise<string[]> {
+  return privateLibrarySplit(await privateLibraries(), userId, role === 'admin').hidden;
+}
 
 /**
  * The configured genre list, tidied: trimmed, de-duplicated case-blind, at most 60 characters each, no control
@@ -494,15 +533,21 @@ export async function viewCtxFor(
   // unset or misspelled variable handed every account an unrestricted context on the path that governs page
   // bytes and OPDS downloads. Fail closed, into the restricted model below.
   if (process.env.LIBRARY_BACKEND === 'komga') {
-    return { userId, libraryIds: null, maxAgeRating: null, hideAdultLibraries: false, adultGenres: [], adultSources: [] };
+    return { userId, libraryIds: null, maxAgeRating: null, hideAdultLibraries: false, adultGenres: [], adultSources: [], hiddenLibraryIds: [] };
   }
   // Loaded even for an admin: the 18+ switch is a surfacing preference everyone has, not a restriction
   // only capped accounts carry, and an admin is exactly who turns it on to tidy their own home screen.
   const { genres: adultGenres, sources: adultSources } = hideAdultLibraries
     ? await adultFilter()
     : { genres: [] as string[], sources: [] as string[] };
-  if (!userId || role === 'admin') {
-    return { userId, libraryIds: null, maxAgeRating: null, hideAdultLibraries, adultGenres, adultSources };
+  if (!userId) {
+    return { userId, libraryIds: null, maxAgeRating: null, hideAdultLibraries, adultGenres, adultSources, hiddenLibraryIds: [] };
+  }
+  if (role === 'admin') {
+    return {
+      userId, libraryIds: null, maxAgeRating: null, hideAdultLibraries, adultGenres, adultSources,
+      hiddenLibraryIds: await hiddenLibrariesFor(userId, role),
+    };
   }
   // Deliberately NOT caught. Both restrictions are expressed by a NON-null value, so any fallback here is a
   // fallback to "unrestricted": `.catch(() => [])` collapsed through `rows.length ? ... : null` into
@@ -514,24 +559,28 @@ export async function viewCtxFor(
   // fallback -- that would turn a lookup failure into a silent lockout instead of an error". Letting the
   // failure surface is that rule applied in the safe direction: an error the caller reports, not a widening
   // nobody sees.
-  const [rows, cap] = await Promise.all([
+  const [rows, cap, priv] = await Promise.all([
     q<{ library_id: string }>('SELECT library_id FROM user_libraries WHERE user_id = $1', [userId]),
     one<{ max_age_rating: number | null; disabled: boolean }>('SELECT max_age_rating, disabled FROM users WHERE id = $1', [userId]),
+    privateLibraries(),
   ]);
+  const { hidden, owned } = privateLibrarySplit(priv, userId, false);
   // No account behind the id (deleted while a cookie or token signed for it still lives), or a disabled one: it
   // sees nothing. Without this a vanished row read as null for BOTH restrictions -- the same "fallback to
   // unrestricted" as above, with the deleted grants widening the viewer to every library and no age cap.
-  if (!cap || cap.disabled) return { userId, libraryIds: [], maxAgeRating: 0, hideAdultLibraries, adultGenres, adultSources };
+  if (!cap || cap.disabled) return { userId, libraryIds: [], maxAgeRating: 0, hideAdultLibraries, adultGenres, adultSources, hiddenLibraryIds: hidden };
   // A capped account is refused the sources rated Adult only from the in-memory copy (sourceRatedAdult). A boot that
   // could not read it leaves it empty, which would let this account in: read it first, and fail as the reads above do.
   if (cap.max_age_rating !== null && cap.max_age_rating < ADULT_RATING && !ratedAdultRead) await loadAdultSources();
   return {
     userId,
-    libraryIds: rows.length ? rows.map((r) => r.library_id) : null,
+    // Owning a private library is its grant: a member restricted to some libraries still sees their own.
+    libraryIds: rows.length ? [...rows.map((r) => r.library_id), ...owned] : null,
     maxAgeRating: cap?.max_age_rating ?? null,
     hideAdultLibraries,
     adultGenres,
     adultSources,
+    hiddenLibraryIds: hidden,
   };
 }
 

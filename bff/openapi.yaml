@@ -11764,6 +11764,10 @@ paths:
                     mode: { type: string, enum: [vertical, paged] }
                     spread: { type: boolean }
                     pagedDirection: { type: string, enum: [ltr, rtl, series] }
+                ownerId:
+                  type: [string, "null"]
+                  format: uuid
+                  description: The account this library is private to; null for an ordinary library. Other admins can still open it unless the owner is an admin.
       security:
         - bearer: []
       responses:
@@ -11913,6 +11917,10 @@ paths:
                     mode: { type: string, enum: [vertical, paged] }
                     spread: { type: boolean }
                     pagedDirection: { type: string, enum: [ltr, rtl, series] }
+                ownerId:
+                  type: [string, "null"]
+                  format: uuid
+                  description: The account this library is private to; null for an ordinary library. Other admins can still open it unless the owner is an admin.
                 members:
                   type: array
                   items: { type: string }

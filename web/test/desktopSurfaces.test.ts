@@ -106,8 +106,8 @@ test('per-person library access is hidden on desktop, and Extensions becomes the
   const admin = code(read('app/admin/page.tsx'));
   const libs = slice(admin, 'function LibrariesSection(', 'function LibraryAccessDialog(');
   assert.match(libs, /const desktopLibs = isDesktop\(\);/);
-  assert.match(libs, /\{!desktopLibs && <button onClick=\{\(\) => setAccess\(l\)\} className="chip text-xs">\{tr\('Access'\)\}<\/button>\}/, 'the Access chip shows on desktop');
-  assert.match(libs, /\{!desktopLibs && <>\{' · '\}\{!anyMembers \? tr\('admins only'\)/, 'the "who can open it" fact shows on desktop');
+  assert.match(libs, /\{!desktopLibs && !l\.owner_id && <button onClick=\{\(\) => setAccess\(l\)\} className="chip text-xs">\{tr\('Access'\)\}<\/button>\}/, 'the Access chip shows on desktop');
+  assert.match(libs, /\{!desktopLibs && <>\{' · '\}\{l\.owner_id \? tr\('private to \{name\}', \{ name: ownerName\(l\) \}\) : !anyMembers \? tr\('admins only'\)/, 'the "who can open it" fact shows on desktop');
   // v0.54.0: the engine's card is the top of Admin → Sources (components/SourcesPanel.tsx), above the rest of the
   // sources -- never instead of them; the desktop gate is its own, before the server's setup card.
   const panel = slice(code(read('components/SourcesPanel.tsx')), 'export function SourcesPanel(', 'function AttentionRow(');

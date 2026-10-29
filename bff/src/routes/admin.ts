@@ -70,7 +70,7 @@ import sharp from 'sharp';
 import { ART_BODY_LIMIT, ART_DIR, FIRST_PAGE, artFile, artOverview } from '../lib/seriesArt';
 import { writePreflight } from '../lib/fsGuard';
 // Admin stats report on the whole library by definition; this route is already behind requireAdmin.
-import { NO_LIBRARIES, SYSTEM_CTX, visibleToAll, sanitiseAdultList, sanitiseSourceIds, invalidateAdultFilter, applyAdultSources, rateSourceAdult, MAX_ADULT_SOURCES, browsableIds, nameableIds, viewCtxFor, visible, Params, hideAdult, ADULT_RATING } from '../lib/visibility';
+import { NO_LIBRARIES, SYSTEM_CTX, visibleToAll, sanitiseAdultList, sanitiseSourceIds, invalidateAdultFilter, applyAdultSources, rateSourceAdult, MAX_ADULT_SOURCES, browsableIds, nameableIds, viewCtxFor, visible, Params, hideAdult, ADULT_RATING, hiddenLibrariesFor } from '../lib/visibility';
 import { cleanSourceOrder, invalidateSourcePrefs } from '../lib/sourcePrefs';
 import { keepRestricted, memberDefaults, memberDefaultsShape, permsShape, saveMemberDefaults } from '../lib/memberDefaults';
 import { FOLLOW_LIMIT_MAX, followerLimit, forgetFollowerLimit } from '../lib/followLimit';
@@ -3055,7 +3055,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     }
 
     const lib = await one<{ id: string }>('SELECT id FROM libraries WHERE id = $1', [b.data.libraryId]);
-    if (!lib) return reply.code(404).send({ error: 'no_such_library' });
+    if (!lib || await libraryHidden(req, lib.id)) return reply.code(404).send({ error: 'no_such_library' });
     await q('UPDATE lib_series SET library_id = $2, library_pinned = true WHERE id = $1', [id, b.data.libraryId]);
     await logAudit('series.library', { userId: userIdOf(req), detail: { id, libraryId: b.data.libraryId }, req });
     return { ok: true, pinned: true };
@@ -3088,7 +3088,7 @@ export default async function adminRoutes(app: FastifyInstance) {
       }
     } else {
       const lib = await one<{ id: string }>('SELECT id FROM libraries WHERE id = $1', [b.data.libraryId]);
-      if (!lib) return reply.code(404).send({ error: 'no_such_library' });
+      if (!lib || await libraryHidden(req, lib.id)) return reply.code(404).send({ error: 'no_such_library' });
       await q('UPDATE lib_series SET library_id = $2, library_pinned = true WHERE id = ANY($1)',
         [found.map((s) => s.id), b.data.libraryId]);
     }
@@ -3132,10 +3132,22 @@ export default async function adminRoutes(app: FastifyInstance) {
     pagedDirection: z.enum(['ltr', 'rtl', 'series']).optional(),
   });
 
-  app.get('/api/admin/libraries', async () => {
-    const rows = await q<{ id: string; name: string; path: string; paths: string[]; age_rating: number | null; anilist_lookup: boolean; reader_prefs: unknown; n: number; pinned: number; members: string[] }>(
+  /**
+   * A library another admin keeps private is not this admin's to see, edit, delete or file series into: it answers as
+   * if it did not exist (lib/visibility.ts privateLibrarySplit).
+   */
+  const libraryHidden = async (req: FastifyRequest, id: string) =>
+    (await hiddenLibrariesFor(userIdOf(req), roleOf(req))).includes(id);
+  /** Who may own a private library: an account that exists. null makes it an ordinary library again. */
+  const PRIVATE_OWNER = z.string().uuid().nullable().optional();
+  const ownerExists = async (ownerId: string | null | undefined) =>
+    !ownerId || !!(await one('SELECT 1 FROM users WHERE id = $1', [ownerId]));
+
+  app.get('/api/admin/libraries', async (req) => {
+    const hidden = await hiddenLibrariesFor(userIdOf(req), roleOf(req));
+    const all = await q<{ id: string; name: string; path: string; paths: string[]; age_rating: number | null; anilist_lookup: boolean; reader_prefs: unknown; owner_id: string | null; n: number; pinned: number; members: string[] }>(
       // `paths`: every folder it holds (v0.55.1, #148), the first -- `path`, all a v0.55.0 reads -- first, then by name.
-      `SELECT l.id, l.name, l.path, l.age_rating, l.anilist_lookup, l.reader_prefs,
+      `SELECT l.id, l.name, l.path, l.age_rating, l.anilist_lookup, l.reader_prefs, l.owner_id::text AS owner_id,
               (SELECT coalesce(array_agg(lp.path ORDER BY lp.path <> l.path, lp.path), '{}') FROM library_paths lp
                 WHERE lp.library_id = l.id) AS paths,
               (SELECT count(*)::int FROM lib_series s WHERE s.library_id = l.id AND ${visibleToAll('s')}) AS n,
@@ -3143,23 +3155,26 @@ export default async function adminRoutes(app: FastifyInstance) {
                  AND ${visibleToAll('s')}) AS pinned,
               -- Who can open it. A member with NO grant rows sees every library, so they count as allowed
               -- here even though nothing links them to this row -- which is what the UI has to show, or
-              -- "nobody can see this" would be wrong for a brand-new install.
+              -- "nobody can see this" would be wrong for a brand-new install. A private library: its owner, if a member.
               (SELECT coalesce(array_agg(u.id), '{}') FROM users u
                 WHERE u.role <> 'admin'
-                  AND (NOT EXISTS (SELECT 1 FROM user_libraries ul WHERE ul.user_id = u.id)
+                  AND (l.owner_id IS NULL OR u.id = l.owner_id)
+                  AND (l.owner_id IS NOT NULL OR NOT EXISTS (SELECT 1 FROM user_libraries ul WHERE ul.user_id = u.id)
                        OR EXISTS (SELECT 1 FROM user_libraries ul WHERE ul.user_id = u.id AND ul.library_id = l.id))
               ) AS members
          FROM libraries l ORDER BY l.sort_order, l.name`,
     );
+    const rows = all.filter((r) => !hidden.includes(r.id));
     // Candidate subdirectories: folders that hold series but are not yet a library. Annotated where the name
     // matches a known source, because that is the case an admin should NOT usually promote.
     const sources = new Set((await q<{ source: string }>('SELECT DISTINCT source FROM lib_series')).map((r) => r.source));
-    const taken = new Set(rows.flatMap((r) => r.paths));
+    // Every library's folders, hidden ones included, so another admin's private folders are not offered as candidates.
+    const taken = new Set(all.flatMap((r) => r.paths));
     // EVERY ancestor of every series folder, not just the first segment. The top level of a real library
     // root holds source names written by the downloader -- which this list then flags as such -- so offering
     // only that level meant the one folder an admin actually wanted was unreachable.
     const seen = new Map<string, number>();
-    for (const r of await q<{ folder: string }>(`SELECT folder FROM lib_series s WHERE ${visibleToAll('s')}`)) {
+    for (const r of await q<{ folder: string }>(`SELECT folder FROM lib_series s WHERE ${visibleToAll('s')} AND NOT (s.library_id = ANY($1))`, [hidden])) {
       const parts = r.folder.split('/');
       // Stop before the last segment: that is the series folder itself, and a library of exactly one series
       // is not a library.
@@ -3280,8 +3295,11 @@ export default async function adminRoutes(app: FastifyInstance) {
       anilistLookup: z.boolean().optional(),
       // Reading defaults for its series (lib/libraryReader.ts). null clears them.
       readerPrefs: LIBRARY_READER.nullable().optional(),
+      // The account it is private to, or null/absent for an ordinary library.
+      ownerId: PRIVATE_OWNER,
     }).safeParse(req.body);
     if (!b.success) return reply.code(400).send({ error: 'bad_request' });
+    if (!(await ownerExists(b.data.ownerId))) return reply.code(404).send({ error: 'no_such_user' });
     const raw = b.data.paths ?? (b.data.path !== undefined ? [b.data.path] : null);
     if (!raw) return reply.code(400).send({ error: 'bad_request' });
     const paths = await storedFolders(raw);
@@ -3295,8 +3313,8 @@ export default async function adminRoutes(app: FastifyInstance) {
       // Checked under the lock, so two saves cannot both take one folder.
       const held = await heldElsewhere(qq, id, paths);
       if (held) return { held };
-      await qq(`INSERT INTO libraries (id, name, path, age_rating, anilist_lookup, reader_prefs) VALUES ($1,$2,$3,$4,$5,$6)`,
-        [id, b.data.name.trim(), paths[0], b.data.ageRating ?? null, b.data.anilistLookup ?? true, cleanLibraryReader(b.data.readerPrefs)]);
+      await qq(`INSERT INTO libraries (id, name, path, age_rating, anilist_lookup, reader_prefs, owner_id) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [id, b.data.name.trim(), paths[0], b.data.ageRating ?? null, b.data.anilistLookup ?? true, cleanLibraryReader(b.data.readerPrefs), b.data.ownerId ?? null]);
       // Reassignment is deliberate and happens here, not in a scan: the scanner keeps an existing folder in
       // the library it is already in, precisely so it can never re-mint an id by recomputing. The longest folder
       // wins, so a new `Manga/Seinen` takes from `Manga` and never the other way, and a pinned series stays put:
@@ -3328,8 +3346,13 @@ export default async function adminRoutes(app: FastifyInstance) {
       readerPrefs: LIBRARY_READER.nullable().optional(),
       // Who may see it. See the note below: this is not simply "insert a row".
       members: z.array(z.string()).optional(),
+      // The account it is private to; null makes it an ordinary library again. The default library is everyone's.
+      ownerId: PRIVATE_OWNER,
     }).safeParse(req.body);
     if (!b.success) return reply.code(400).send({ error: 'bad_request' });
+    if (id === 'lib' && b.data.ownerId) return reply.code(400).send({ error: 'cannot_privatise', message: 'The default library cannot be private.' });
+    if (await libraryHidden(req, id)) return reply.code(404).send({ error: 'not_found' });
+    if (!(await ownerExists(b.data.ownerId))) return reply.code(404).send({ error: 'no_such_user' });
 
     // Folders are checked before anything is written, so a refused save changes nothing.
     const raw = id === 'lib' ? null : b.data.paths ?? (b.data.path !== undefined ? [b.data.path] : null);
@@ -3365,6 +3388,9 @@ export default async function adminRoutes(app: FastifyInstance) {
     }
     if (b.data.readerPrefs !== undefined) {
       await q('UPDATE libraries SET reader_prefs = $2 WHERE id = $1', [id, cleanLibraryReader(b.data.readerPrefs)]);
+    }
+    if (b.data.ownerId !== undefined) {
+      await q('UPDATE libraries SET owner_id = $2 WHERE id = $1', [id, b.data.ownerId]);
     }
 
     /**
@@ -3417,6 +3443,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (id === 'lib') {
       return reply.code(400).send({ error: 'cannot_delete', message: 'The default library cannot be removed.' });
     }
+    if (await libraryHidden(req, id)) return reply.code(404).send({ error: 'not_found' });
     const moved = await tx(async (qq) => {
       await lockLibrarySaves(qq);
       // Back to whichever library still holds each folder -- the enclosing one for a nested library, the

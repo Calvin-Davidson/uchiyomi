@@ -233,7 +233,7 @@ export function workOf(idx: LibraryIndex, it: ItemRef, held: Held[] = heldFor(id
  * the member may open" in discoverIdentity.int.test.ts finds the ungranted series' id.
  */
 export async function nameableFor(idx: LibraryIndex, ctx: ViewCtx): Promise<(id: string) => boolean> {
-  if (ctx.libraryIds === null && ctx.maxAgeRating === null) return () => true;
+  if (ctx.libraryIds === null && ctx.maxAgeRating === null && !ctx.hiddenLibraryIds?.length) return () => true;
   const ids = new Set<string>();
   for (const m of [idx.byPair, idx.byName, idx.byWork]) for (const hs of m.values()) for (const h of hs) ids.add(h.id);
   if (!ids.size) return () => false;

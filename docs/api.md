@@ -1990,6 +1990,13 @@ links, type or direction already stored; moving a series immediately makes the d
 Explicit Admin Art, Relink, Check online matches, tracker import/sync and Discover actions remain available because
 they are manual actions; clients should say that those actions may contact AniList.
 
+A library can be private: `ownerId` (an account id, or null for an ordinary library) on `POST` and `PATCH
+/api/admin/libraries`, returned as `owner_id` on each row of `GET /api/admin/libraries`. Only its owner can open it,
+whatever their grants or anyone else's say; other admins still can unless the owner is an admin. A library private to
+another admin is left out of `GET /api/admin/libraries` and `GET /api/libraries`, and `PATCH`, `DELETE` and filing
+a series into it answer **404** as for a library that does not exist. An `ownerId` that names no account is **404**
+`no_such_user`; on the default library `lib` it is **400** `cannot_privatise`.
+
 **Server settings.** `GET /api/admin/settings` is the one row: `server_name`, `allow_registration`,
 `updater_hours`, `extension_hours`, `extension_auto_update`, `update_check`, `install_ping`, `install_ping_last`,
 `cleanup_read`, `cleanup_read_days`, `backup_hour`, `scanlator_prefs`, `auto_follow_on_failure`,

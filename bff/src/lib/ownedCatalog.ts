@@ -564,7 +564,9 @@ export const owned = {
     );
     // A restricted viewer is told about the libraries they hold, not all of them: the list itself would
     // otherwise leak the existence and names of everything they cannot open.
-    const held = ctx.libraryIds ? rows.filter((r) => ctx.libraryIds!.includes(r.id)) : rows;
+    const held = (ctx.libraryIds ? rows.filter((r) => ctx.libraryIds!.includes(r.id)) : rows)
+      // Someone else's private library is not named either.
+      .filter((r) => !ctx.hiddenLibraryIds?.includes(r.id));
     // A library rated above this viewer's cap is one they can never open, so naming it is the same leak in
     // a different shape. This list had no notion of the age cap at all, which meant a 13+ account was shown
     // the name of the 18+ shelf and a tab that could only ever be empty.

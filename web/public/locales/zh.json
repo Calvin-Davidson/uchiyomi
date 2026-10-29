@@ -2,7 +2,7 @@
   "_meta": {
     "language": "zh",
     "note": "Machine-assisted translation, reviewed for tone but not by a native speaker. Corrections are very welcome: edit this file and open a pull request. Keys are the English source strings, so a missing entry falls back to English.",
-    "strings": 4360
+    "strings": 4364
   },
   "1 check found something": "1 项检查发现问题",
   "1 member": "1 位成员",
@@ -448,6 +448,10 @@
   "active {when}": "{when}活跃",
   "admin": "admin",
   "admins only": "仅管理员",
+  "Private to": "私有给",
+  "Nobody — shared by Access": "无 — 按访问权限共享",
+  "A private library is only for that account. Other admins can still see it, unless it belongs to an admin.": "私有库仅供该账户使用。其他管理员仍可看到它，除非它属于管理员。",
+  "private to {name}": "{name} 私有",
   "chapter": "章",
   "chapters": "章",
   "checked {when}": "{when}检查",

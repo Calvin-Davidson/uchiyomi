@@ -1144,6 +1144,8 @@ interface LibraryRow {
   pinned: number;
   /** Who can open it. Includes members with no restriction at all, who see every library. */
   members: string[];
+  /** The account it is private to, or null for an ordinary library. Other admins see it unless the owner is an admin. */
+  owner_id?: string | null;
 }
 interface LibraryCandidate { path: string; series: number; looksLikeSource: boolean; depth?: number }
 interface FolderRow { name: string; path: string; series: number }
@@ -1377,6 +1379,11 @@ function LibraryDialog({ editing, start, libs, onClose, onSaved }: {
   const [typed, setTyped] = useState('');
   const [age, setAge] = useState<string>(editing?.age_rating == null ? '' : String(editing.age_rating));
   const [anilistLookup, setAniListLookup] = useState(editing?.anilist_lookup ?? true);
+  const [owner, setOwner] = useState(editing?.owner_id ?? '');
+  const { data: people } = useQuery({
+    queryKey: ['admin-users'],
+    queryFn: () => api<{ content: { id: string; username: string | null; display_name: string; role: string }[] }>('/api/admin/users'),
+  });
   const [look, setLook] = useState<Record<string, string>>(() => {
     const r = editing?.reader_prefs;
     return { mode: r?.mode ?? '', spread: r?.spread === undefined ? '' : String(r.spread), pagedDirection: r?.pagedDirection ?? '' };
@@ -1434,13 +1441,14 @@ function LibraryDialog({ editing, start, libs, onClose, onSaved }: {
       if (editing) {
         const body: Record<string, unknown> = { name: name.trim(), ageRating, anilistLookup, readerPrefs: readerPrefs() };
         if (!isLib && !unchanged) body.paths = folders;
+        if (!isLib) body.ownerId = owner || null;
         await api(`/api/admin/libraries/${editing.id}`, { method: 'PATCH', json: body });
         toast(tr('Saved'), 'success');
       } else {
         // One request. This used to POST the library and then PATCH the rating separately, and skip the
         // PATCH entirely when the rating was null -- so a failed second call created an unrated library
         // under a "Created" toast, which is the one outcome nobody would check for.
-        await api('/api/admin/libraries', { method: 'POST', json: { name: name.trim(), paths: folders, ageRating, anilistLookup, readerPrefs: readerPrefs() } });
+        await api('/api/admin/libraries', { method: 'POST', json: { name: name.trim(), paths: folders, ageRating, anilistLookup, readerPrefs: readerPrefs(), ownerId: owner || null } });
         toast(tr('Created'), 'success');
       }
       onSaved();
@@ -1503,6 +1511,20 @@ function LibraryDialog({ editing, start, libs, onClose, onSaved }: {
         <p className="mt-1 text-[11px] text-fog-600">
           {tr('Everything in this library inherits it. A single series can still be rated differently from its own page.')}
         </p>
+
+        {/* The default library is everyone's, and desktop has one person. */}
+        {!isLib && !isDesktop() && (
+          <>
+            <label className="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wider text-fog-500">{tr('Private to')}</label>
+            <select value={owner} onChange={(e) => setOwner(e.target.value)} className="field" data-library-owner>
+              <option value="">{tr('Nobody — shared by Access')}</option>
+              {(people?.content ?? []).map((u) => <option key={u.id} value={u.id}>{u.display_name || u.username}</option>)}
+            </select>
+            <p className="mt-1 text-[11px] text-fog-600">
+              {tr('A private library is only for that account. Other admins can still see it, unless it belongs to an admin.')}
+            </p>
+          </>
+        )}
 
         <label className="mt-3 flex max-w-md cursor-pointer items-start justify-between gap-4 rounded-lg border border-ink-700 bg-ink-900/40 p-3">
           <span className="min-w-0">
@@ -1576,8 +1598,12 @@ function LibrariesSection() {
   // difference between a warning and a fact. Admins always see everything and are not members.
   const { data: people } = useQuery({
     queryKey: ['admin-users'],
-    queryFn: () => api<{ content: { role: string }[] }>('/api/admin/users'),
+    queryFn: () => api<{ content: { id: string; username: string | null; display_name: string; role: string }[] }>('/api/admin/users'),
   });
+  const ownerName = (l: LibraryRow) => {
+    const u = (people?.content ?? []).find((p) => p.id === l.owner_id);
+    return u ? u.display_name || u.username || '' : '?';
+  };
   const anyMembers = (people?.content ?? []).some((u) => u.role !== 'admin');
   // Uchiyomi Desktop keeps libraries and their age rating but not who may open them (lib/desktop.ts).
   const desktopLibs = isDesktop();
@@ -1626,7 +1652,7 @@ function LibrariesSection() {
                 {l.n} {tr('series')}
                 {l.pinned > 0 && <> · {l.pinned === 1 ? tr('1 filed by hand') : tr('{n} filed by hand', { n: l.pinned })}</>}
                 {/* Who may open it is per-person access, which desktop does not have (one person, no members). */}
-                {!desktopLibs && <>{' · '}{!anyMembers ? tr('admins only') : l.members.length ? tr('{n} can open it', { n: l.members.length }) : tr('nobody can open it')}</>}
+                {!desktopLibs && <>{' · '}{l.owner_id ? tr('private to {name}', { name: ownerName(l) }) : !anyMembers ? tr('admins only') : l.members.length ? tr('{n} can open it', { n: l.members.length }) : tr('nobody can open it')}</>}
               </p>
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1639,7 +1665,8 @@ function LibrariesSection() {
                 className={`chip text-xs ${l.age_rating != null ? 'border-amber-500/40 text-amber-300' : ''}`}>
                 {l.age_rating != null ? tr('{n}+', { n: l.age_rating }) : tr('Not rated')}
               </button>
-              {!desktopLibs && <button onClick={() => setAccess(l)} className="chip text-xs">{tr('Access')}</button>}
+              {/* A private library's access is its owner, set in Settings. */}
+              {!desktopLibs && !l.owner_id && <button onClick={() => setAccess(l)} className="chip text-xs">{tr('Access')}</button>}
               <button onClick={() => openEdit(l)} className="chip text-xs">{tr('Settings')}</button>
               {l.id !== 'lib' && (
                 <button onClick={() => setConfirmDel(l)} className="chip text-xs hover:border-rose-500/50 hover:text-rose-400">{tr('Remove')}</button>

@@ -3140,6 +3140,12 @@ limits set can open every library, including ones you add later. Unticking them 
 an explicit list -- so granting a library to an unrestricted member changes nothing, and revoking one is what
 narrows them.
 
+**Private libraries.** In a library's **Settings**, **Private to** gives it to one account. Only that account can
+open it, whatever **Access** says for anyone else, and it is left out of everyone else's library list. Other admins
+still see a member's private library and can change it; one that belongs to an admin is that admin's alone, and it does
+not appear on other admins' **Admin → Libraries** either. Set **Private to** back to *Nobody* to share it by **Access**
+again. The default library cannot be private.
+
 **Filing a series by hand.** Edit any series and set **Library**, or select several on the Library page and
 use **Move to library**. A series filed by hand stays put: rescans, newly created libraries and changing an
 existing one's folders all leave it alone. Set it back to **Automatic** to hand it to the folder rule again;
