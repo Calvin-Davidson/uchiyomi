@@ -11767,7 +11767,7 @@ paths:
                 ownerId:
                   type: [string, "null"]
                   format: uuid
-                  description: The account this library is private to; null for an ordinary library. Other admins can still open it unless the owner is an admin.
+                  description: The account this library is private to; null for an ordinary library. Only its owner can open it, admins included. Set at creation and never changed.
       security:
         - bearer: []
       responses:
@@ -11920,7 +11920,7 @@ paths:
                 ownerId:
                   type: [string, "null"]
                   format: uuid
-                  description: The account this library is private to; null for an ordinary library. Other admins can still open it unless the owner is an admin.
+                  description: Accepted only as the library's current owner (null for an ordinary library); any other value is 400 owner_fixed. A library private to someone else answers 403 private_library.
                 members:
                   type: array
                   items: { type: string }

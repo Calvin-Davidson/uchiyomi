@@ -1144,8 +1144,10 @@ interface LibraryRow {
   pinned: number;
   /** Who can open it. Includes members with no restriction at all, who see every library. */
   members: string[];
-  /** The account it is private to, or null for an ordinary library. Other admins see it unless the owner is an admin. */
+  /** The account it is private to, or null for an ordinary library. Set when it is created and never changed. */
   owner_id?: string | null;
+  /** Private to someone else: listed without its folders, and Remove is all an admin can do with it. */
+  locked?: boolean;
 }
 interface LibraryCandidate { path: string; series: number; looksLikeSource: boolean; depth?: number }
 interface FolderRow { name: string; path: string; series: number }
@@ -1441,7 +1443,6 @@ function LibraryDialog({ editing, start, libs, onClose, onSaved }: {
       if (editing) {
         const body: Record<string, unknown> = { name: name.trim(), ageRating, anilistLookup, readerPrefs: readerPrefs() };
         if (!isLib && !unchanged) body.paths = folders;
-        if (!isLib) body.ownerId = owner || null;
         await api(`/api/admin/libraries/${editing.id}`, { method: 'PATCH', json: body });
         toast(tr('Saved'), 'success');
       } else {
@@ -1516,12 +1517,13 @@ function LibraryDialog({ editing, start, libs, onClose, onSaved }: {
         {!isLib && !isDesktop() && (
           <>
             <label className="mb-1 mt-3 block text-xs font-semibold uppercase tracking-wider text-fog-500">{tr('Private to')}</label>
-            <select value={owner} onChange={(e) => setOwner(e.target.value)} className="field" data-library-owner>
+            {/* Chosen when the library is created; who it belongs to cannot be changed afterwards. */}
+            <select value={owner} onChange={(e) => setOwner(e.target.value)} disabled={!!editing} className="field" data-library-owner>
               <option value="">{tr('Nobody — shared by Access')}</option>
               {(people?.content ?? []).map((u) => <option key={u.id} value={u.id}>{u.display_name || u.username}</option>)}
             </select>
             <p className="mt-1 text-[11px] text-fog-600">
-              {tr('A private library is only for that account. Other admins can still see it, unless it belongs to an admin.')}
+              {tr('A private library is only for that account, admins included. Who it belongs to cannot be changed later.')}
             </p>
           </>
         )}
@@ -1647,7 +1649,7 @@ function LibrariesSection() {
             <div className="min-w-0">
               <p className="truncate text-sm text-fog-100">{l.name}</p>
               {/* Its folders: the first, then how many more (v0.55.1, #148). */}
-              <LibraryFolders paths={foldersOf(l)} className="text-[11px] text-fog-500" />
+              {!l.locked && <LibraryFolders paths={foldersOf(l)} className="text-[11px] text-fog-500" />}
               <p className="truncate text-[11px] text-fog-600">
                 {l.n} {tr('series')}
                 {l.pinned > 0 && <> · {l.pinned === 1 ? tr('1 filed by hand') : tr('{n} filed by hand', { n: l.pinned })}</>}
@@ -1661,13 +1663,16 @@ function LibrariesSection() {
                   ratings were in there -- so a rating that had never been set looked like a feature that
                   did not exist. Showing the UNRATED state is the point: no badge used to mean both
                   "everyone can see this" and "I never looked". */}
-              <button onClick={() => openEdit(l)}
-                className={`chip text-xs ${l.age_rating != null ? 'border-amber-500/40 text-amber-300' : ''}`}>
-                {l.age_rating != null ? tr('{n}+', { n: l.age_rating }) : tr('Not rated')}
-              </button>
+              {/* Someone else's private library: Remove is the one thing an admin can do with it. */}
+              {!l.locked && (
+                <button onClick={() => openEdit(l)}
+                  className={`chip text-xs ${l.age_rating != null ? 'border-amber-500/40 text-amber-300' : ''}`}>
+                  {l.age_rating != null ? tr('{n}+', { n: l.age_rating }) : tr('Not rated')}
+                </button>
+              )}
               {/* A private library's access is its owner, set in Settings. */}
               {!desktopLibs && !l.owner_id && <button onClick={() => setAccess(l)} className="chip text-xs">{tr('Access')}</button>}
-              <button onClick={() => openEdit(l)} className="chip text-xs">{tr('Settings')}</button>
+              {!l.locked && <button onClick={() => openEdit(l)} className="chip text-xs">{tr('Settings')}</button>}
               {l.id !== 'lib' && (
                 <button onClick={() => setConfirmDel(l)} className="chip text-xs hover:border-rose-500/50 hover:text-rose-400">{tr('Remove')}</button>
               )}
@@ -1700,7 +1705,9 @@ function LibrariesSection() {
       {confirmDel && (
         <ConfirmDialog
           title={tr('Remove “{name}”?', { name: confirmDel.name })}
-          body={<>{tr('Its series go back to whichever library still covers their folder, or to the default. Nothing is deleted, no files are touched, and no reading progress changes.')}</>}
+          body={<>{confirmDel.owner_id
+            ? tr('It is private, so it goes completely: every series in it, their downloaded files and their reading history are deleted for good. Nothing goes to another library.')
+            : tr('Its series go back to whichever library still covers their folder, or to the default. Nothing is deleted, no files are touched, and no reading progress changes.')}</>}
           confirmLabel={tr('Remove library')}
           danger
           busy={busy}

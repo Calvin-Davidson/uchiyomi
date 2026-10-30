@@ -859,7 +859,7 @@ ALTER TABLE libraries ADD COLUMN IF NOT EXISTS reader_prefs jsonb;
 
 -- A private library: its owner's alone (lib/visibility.ts privateLibrarySplit). NULL is an ordinary library, shared
 -- by grants as before. No foreign key on purpose: ON DELETE SET NULL would make a deleted owner's library public to
--- everyone, whereas a dangling owner leaves it to the admins, who can give it to someone else.
+-- everyone, whereas a dangling owner leaves it to no one until an admin deletes it.
 ALTER TABLE libraries ADD COLUMN IF NOT EXISTS owner_id uuid;
 
 -- Why a series is in the library it is in. The scanner already keeps an existing series where it is, so a

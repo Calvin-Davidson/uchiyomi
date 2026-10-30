@@ -1990,12 +1990,15 @@ links, type or direction already stored; moving a series immediately makes the d
 Explicit Admin Art, Relink, Check online matches, tracker import/sync and Discover actions remain available because
 they are manual actions; clients should say that those actions may contact AniList.
 
-A library can be private: `ownerId` (an account id, or null for an ordinary library) on `POST` and `PATCH
-/api/admin/libraries`, returned as `owner_id` on each row of `GET /api/admin/libraries`. Only its owner can open it,
-whatever their grants or anyone else's say; other admins still can unless the owner is an admin. A library private to
-another admin is left out of `GET /api/admin/libraries` and `GET /api/libraries`, and `PATCH`, `DELETE` and filing
-a series into it answer **404** as for a library that does not exist. An `ownerId` that names no account is **404**
-`no_such_user`; on the default library `lib` it is **400** `cannot_privatise`.
+A library can be private: `ownerId` (an account id, or null for an ordinary library) on `POST /api/admin/libraries`,
+returned as `owner_id` on each row of `GET /api/admin/libraries`. Only its owner can open it, admins included, and
+it is left out of everyone else's `GET /api/libraries`. `GET /api/admin/libraries` still lists a library private to
+someone else, with `locked: true` and no `path`, `paths` or `members`; `PATCH` on it is **403** `private_library`, and
+filing a series into it is **404** `no_such_library`. The owner is fixed: a `PATCH` whose `ownerId` differs from the
+current one is **400** `owner_fixed`. An `ownerId` that names no account is **404** `no_such_user`. `DELETE` on a
+private library removes it completely: every series in it is removed, its files deleted and the series forgotten
+(the answer's `purged` counts them), instead of moving to another library; a series whose files cannot be deleted
+stops it with **409** `refused`.
 
 **Server settings.** `GET /api/admin/settings` is the one row: `server_name`, `allow_registration`,
 `updater_hours`, `extension_hours`, `extension_auto_update`, `update_check`, `install_ping`, `install_ping_last`,

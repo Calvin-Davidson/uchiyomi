@@ -57,8 +57,8 @@ export interface ViewCtx {
    */
   readonly adultSources: readonly string[];
   /**
-   * Private libraries this viewer may not see: ones another account owns (`libraries.owner_id`). An admin is kept out
-   * only of those owned by another ADMIN; a member, of every one they do not own. Applied by `visible()` on top of
+   * Private libraries this viewer may not see: every one another account owns (`libraries.owner_id`), admins included --
+   * an admin may see that one exists and delete it, never what is in it. Applied by `visible()` on top of
    * `libraryIds`, so a grant row never opens someone else's private library. Empty for background work.
    */
   readonly hiddenLibraryIds: readonly string[];
@@ -139,33 +139,26 @@ export const SYSTEM_CTX: ViewCtx = {
 /**
  * Which private libraries one account may not see, and which it owns, from every private library's owner.
  *
- * A private library is its owner's alone. Other admins still see it -- they run the server -- unless the owner is an
- * admin too, in which case it is that admin's alone. An owner whose account is gone counts as a member: admins see
- * the library and can give it to someone else, members do not. Pure, so the rule is testable without a database.
+ * A private library is its owner's alone. Admins see that it exists (Admin → Libraries) and may delete it, but not what
+ * is in it, and an owner whose account is gone leaves it to no one. Pure, so the rule is testable without a database.
  */
 export function privateLibrarySplit(
-  rows: readonly { id: string; owner_id: string; owner_admin: boolean }[],
+  rows: readonly { id: string; owner_id: string }[],
   userId: string,
-  isAdmin: boolean,
 ): { hidden: string[]; owned: string[] } {
   const hidden: string[] = [];
   const owned: string[] = [];
-  for (const r of rows) {
-    if (r.owner_id === userId) owned.push(r.id);
-    else if (!isAdmin || r.owner_admin) hidden.push(r.id);
-  }
+  for (const r of rows) (r.owner_id === userId ? owned : hidden).push(r.id);
   return { hidden, owned };
 }
 
 /** Every private library with its owner, for `privateLibrarySplit`. Not caught: see viewCtxFor. */
-export const privateLibraries = () => q<{ id: string; owner_id: string; owner_admin: boolean }>(
-  `SELECT l.id, l.owner_id::text AS owner_id, COALESCE(u.role = 'admin', false) AS owner_admin
-     FROM libraries l LEFT JOIN users u ON u.id = l.owner_id
-    WHERE l.owner_id IS NOT NULL`);
+export const privateLibraries = () => q<{ id: string; owner_id: string }>(
+  'SELECT id, owner_id::text AS owner_id FROM libraries WHERE owner_id IS NOT NULL');
 
 /** The private libraries hidden from this account (admin routes, which do not build a ViewCtx). */
-export async function hiddenLibrariesFor(userId: string, role: string): Promise<string[]> {
-  return privateLibrarySplit(await privateLibraries(), userId, role === 'admin').hidden;
+export async function hiddenLibrariesFor(userId: string): Promise<string[]> {
+  return privateLibrarySplit(await privateLibraries(), userId).hidden;
 }
 
 /**
@@ -546,7 +539,7 @@ export async function viewCtxFor(
   if (role === 'admin') {
     return {
       userId, libraryIds: null, maxAgeRating: null, hideAdultLibraries, adultGenres, adultSources,
-      hiddenLibraryIds: await hiddenLibrariesFor(userId, role),
+      hiddenLibraryIds: await hiddenLibrariesFor(userId),
     };
   }
   // Deliberately NOT caught. Both restrictions are expressed by a NON-null value, so any fallback here is a
@@ -564,7 +557,7 @@ export async function viewCtxFor(
     one<{ max_age_rating: number | null; disabled: boolean }>('SELECT max_age_rating, disabled FROM users WHERE id = $1', [userId]),
     privateLibraries(),
   ]);
-  const { hidden, owned } = privateLibrarySplit(priv, userId, false);
+  const { hidden, owned } = privateLibrarySplit(priv, userId);
   // No account behind the id (deleted while a cookie or token signed for it still lives), or a disabled one: it
   // sees nothing. Without this a vanished row read as null for BOTH restrictions -- the same "fallback to
   // unrestricted" as above, with the deleted grants widening the viewer to every library and no age cap.

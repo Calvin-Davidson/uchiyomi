@@ -3140,11 +3140,12 @@ limits set can open every library, including ones you add later. Unticking them 
 an explicit list -- so granting a library to an unrestricted member changes nothing, and revoking one is what
 narrows them.
 
-**Private libraries.** In a library's **Settings**, **Private to** gives it to one account. Only that account can
-open it, whatever **Access** says for anyone else, and it is left out of everyone else's library list. Other admins
-still see a member's private library and can change it; one that belongs to an admin is that admin's alone, and it does
-not appear on other admins' **Admin → Libraries** either. Set **Private to** back to *Nobody* to share it by **Access**
-again. The default library cannot be private.
+**Private libraries.** When you create a library, **Private to** gives it to one account. Only that account can
+open it, whatever **Access** says for anyone else, admins included, and it is left out of everyone else's library list.
+Other admins still see on **Admin → Libraries** that it exists and whose it is, but not its folders or what is in it,
+and they cannot change its settings. Who it belongs to cannot be changed afterwards. **Remove** deletes a private
+library completely: its series, their downloaded files and their reading history are deleted for good, rather than
+handed to another library.
 
 **Filing a series by hand.** Edit any series and set **Library**, or select several on the Library page and
 use **Move to library**. A series filed by hand stays put: rescans, newly created libraries and changing an

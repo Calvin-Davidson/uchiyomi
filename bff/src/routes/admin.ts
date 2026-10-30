@@ -3133,18 +3133,18 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   /**
-   * A library another admin keeps private is not this admin's to see, edit, delete or file series into: it answers as
-   * if it did not exist (lib/visibility.ts privateLibrarySplit).
+   * A library private to someone else is not this admin's to open, edit or file series into (lib/visibility.ts
+   * privateLibrarySplit). Admin → Libraries still lists it, without its folders, and Remove still deletes it.
    */
   const libraryHidden = async (req: FastifyRequest, id: string) =>
-    (await hiddenLibrariesFor(userIdOf(req), roleOf(req))).includes(id);
-  /** Who may own a private library: an account that exists. null makes it an ordinary library again. */
+    (await hiddenLibrariesFor(userIdOf(req))).includes(id);
+  /** Who may own a private library: an account that exists. Set when the library is created and never changed. */
   const PRIVATE_OWNER = z.string().uuid().nullable().optional();
   const ownerExists = async (ownerId: string | null | undefined) =>
     !ownerId || !!(await one('SELECT 1 FROM users WHERE id = $1', [ownerId]));
 
   app.get('/api/admin/libraries', async (req) => {
-    const hidden = await hiddenLibrariesFor(userIdOf(req), roleOf(req));
+    const hidden = await hiddenLibrariesFor(userIdOf(req));
     const all = await q<{ id: string; name: string; path: string; paths: string[]; age_rating: number | null; anilist_lookup: boolean; reader_prefs: unknown; owner_id: string | null; n: number; pinned: number; members: string[] }>(
       // `paths`: every folder it holds (v0.55.1, #148), the first -- `path`, all a v0.55.0 reads -- first, then by name.
       `SELECT l.id, l.name, l.path, l.age_rating, l.anilist_lookup, l.reader_prefs, l.owner_id::text AS owner_id,
@@ -3164,7 +3164,11 @@ export default async function adminRoutes(app: FastifyInstance) {
               ) AS members
          FROM libraries l ORDER BY l.sort_order, l.name`,
     );
-    const rows = all.filter((r) => !hidden.includes(r.id));
+    // Someone else's private library: that it exists, whose it is and how big, never what is in it. `locked` tells the
+    // page that Remove is the one thing it can do with it.
+    const rows = all.map((r) => hidden.includes(r.id)
+      ? { ...r, path: '', paths: [] as string[], pinned: 0, members: [] as string[], locked: true }
+      : { ...r, locked: false });
     // Candidate subdirectories: folders that hold series but are not yet a library. Annotated where the name
     // matches a known source, because that is the case an admin should NOT usually promote.
     const sources = new Set((await q<{ source: string }>('SELECT DISTINCT source FROM lib_series')).map((r) => r.source));
@@ -3346,13 +3350,17 @@ export default async function adminRoutes(app: FastifyInstance) {
       readerPrefs: LIBRARY_READER.nullable().optional(),
       // Who may see it. See the note below: this is not simply "insert a row".
       members: z.array(z.string()).optional(),
-      // The account it is private to; null makes it an ordinary library again. The default library is everyone's.
+      // Accepted only as it already is: who a library is private to is decided when it is created.
       ownerId: PRIVATE_OWNER,
     }).safeParse(req.body);
     if (!b.success) return reply.code(400).send({ error: 'bad_request' });
-    if (id === 'lib' && b.data.ownerId) return reply.code(400).send({ error: 'cannot_privatise', message: 'The default library cannot be private.' });
-    if (await libraryHidden(req, id)) return reply.code(404).send({ error: 'not_found' });
-    if (!(await ownerExists(b.data.ownerId))) return reply.code(404).send({ error: 'no_such_user' });
+    if (await libraryHidden(req, id)) return reply.code(403).send({ error: 'private_library', message: 'That library is private to someone else. You can only remove it.' });
+    if (b.data.ownerId !== undefined) {
+      const cur = await one<{ owner_id: string | null }>('SELECT owner_id::text AS owner_id FROM libraries WHERE id = $1', [id]);
+      if (cur && (cur.owner_id ?? null) !== b.data.ownerId) {
+        return reply.code(400).send({ error: 'owner_fixed', message: 'Who a library is private to cannot be changed.' });
+      }
+    }
 
     // Folders are checked before anything is written, so a refused save changes nothing.
     const raw = id === 'lib' ? null : b.data.paths ?? (b.data.path !== undefined ? [b.data.path] : null);
@@ -3388,9 +3396,6 @@ export default async function adminRoutes(app: FastifyInstance) {
     }
     if (b.data.readerPrefs !== undefined) {
       await q('UPDATE libraries SET reader_prefs = $2 WHERE id = $1', [id, cleanLibraryReader(b.data.readerPrefs)]);
-    }
-    if (b.data.ownerId !== undefined) {
-      await q('UPDATE libraries SET owner_id = $2 WHERE id = $1', [id, b.data.ownerId]);
     }
 
     /**
@@ -3443,7 +3448,42 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (id === 'lib') {
       return reply.code(400).send({ error: 'cannot_delete', message: 'The default library cannot be removed.' });
     }
-    if (await libraryHidden(req, id)) return reply.code(404).send({ error: 'not_found' });
+    const lib = await one<{ owner_id: string | null }>('SELECT owner_id::text AS owner_id FROM libraries WHERE id = $1', [id]);
+    if (!lib) return reply.code(404).send({ error: 'not_found' });
+    // A private library goes completely: every series in it is removed, its files deleted and the series forgotten,
+    // rather than handed to whichever library covers the folder -- which would make its contents public.
+    const purged: string[] = [];
+    if (lib.owner_id) {
+      const series = await q<{ id: string }>('SELECT id FROM lib_series WHERE library_id = $1 AND merged_into IS NULL ORDER BY id', [id]);
+      for (const { id: sid } of series) {
+        const owned = await q<{ id: string; folder: string }>('SELECT id, folder FROM lib_series WHERE id = $1 OR merged_into = $1', [sid]);
+        const claim = claimSeriesWriter(owned.map((s) => s.id), owned.map((s) => s.folder));
+        if (!claim) return reply.code(409).send({ error: 'busy', message: 'Another task is changing a series in that library.', removed: purged.length });
+        try {
+          const row = await getSeriesRow(sid);
+          if (row && !row.deleted_at) await deleteSeries(sid);
+          // Refused when there is nothing on disk to delete; Forget below is then the one that says whether that is fine.
+          const files = await deleteSeriesFiles(sid, { gone: true });
+          if (files.ok) {
+            await logAudit('series.delete_files', {
+              userId: userIdOf(req), detail: { id: sid, files: files.files, bytes: files.bytes, bookIds: files.deletedBookIds, applied: files.deletedBookIds.length, library: id }, req,
+            });
+          }
+          const r = await forgetSeries(sid);
+          if (!r.ok && r.refused !== 'not_found') {
+            return reply.code(409).send({ error: 'refused', message: files.ok ? r.message : files.reason, fix: files.ok ? r.fix : files.fix, removed: purged.length });
+          }
+          if (r.ok) {
+            await logAudit('series.forget', {
+              userId: userIdOf(req),
+              detail: { id: sid, title: r.title, folder: r.folder, books: r.books, absorbed: r.absorbed, absorbedIds: r.absorbedIds, users: r.users, rowsByTable: r.rowsByTable, library: id },
+              req,
+            });
+          }
+          purged.push(sid);
+        } finally { claim.release(); }
+      }
+    }
     const moved = await tx(async (qq) => {
       await lockLibrarySaves(qq);
       // Back to whichever library still holds each folder -- the enclosing one for a nested library, the
@@ -3462,8 +3502,8 @@ export default async function adminRoutes(app: FastifyInstance) {
       await qq('DELETE FROM libraries WHERE id = $1', [id]);
       return n;
     });
-    await logAudit('library.delete', { userId: userIdOf(req), detail: { id, moved }, req });
-    return { ok: true, moved };
+    await logAudit('library.delete', { userId: userIdOf(req), detail: { id, moved, ...(lib.owner_id ? { purged } : {}) }, req });
+    return { ok: true, moved, ...(lib.owner_id ? { purged: purged.length } : {}) };
   });
 
   // Set/replace a cover or background: paste a URL, upload an image (base64 data URL), or reset to automatic. The body

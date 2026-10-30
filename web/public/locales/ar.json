@@ -2,7 +2,7 @@
   "_meta": {
     "language": "ar",
     "note": "Machine-assisted translation, reviewed for tone but not by a native speaker. Corrections are very welcome: edit this file and open a pull request. Keys are the English source strings, so a missing entry falls back to English.",
-    "strings": 4364
+    "strings": 4365
   },
   "1 check found something": "فحص واحد وجد شيئًا",
   "1 member": "عضو واحد",
@@ -450,7 +450,8 @@
   "admins only": "المشرفون فقط",
   "Private to": "خاصة بـ",
   "Nobody — shared by Access": "لا أحد — تُشارك حسب الوصول",
-  "A private library is only for that account. Other admins can still see it, unless it belongs to an admin.": "المكتبة الخاصة لهذا الحساب وحده. يمكن للمشرفين الآخرين رؤيتها، إلا إذا كانت لمشرف.",
+  "A private library is only for that account, admins included. Who it belongs to cannot be changed later.": "المكتبة الخاصة لهذا الحساب وحده، بما في ذلك المسؤولون. لا يمكن تغيير مالكها لاحقًا.",
+  "It is private, so it goes completely: every series in it, their downloaded files and their reading history are deleted for good. Nothing goes to another library.": "إنها خاصة، لذا تُحذف بالكامل: كل سلسلة فيها وملفاتها المنزّلة وسجل قراءتها تُحذف نهائيًا. لا ينتقل شيء إلى مكتبة أخرى.",
   "private to {name}": "خاصة بـ {name}",
   "chapter": "فصل",
   "chapters": "فصلًا",

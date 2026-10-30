@@ -19,8 +19,9 @@ test('with LIBRARY_BACKEND unset, the owned backend is selected', async () => {
 
 test('with LIBRARY_BACKEND unset, the visibility model is enforced rather than skipped', async () => {
   const { viewCtxFor } = await import('../src/lib/visibility');
-  // The admin short-circuit needs no database and tells the two branches apart: the Komga branch discards
-  // the hideAdult preference (it returns false regardless), the owned branch honours it.
-  const ctx = await viewCtxFor('u1', 'admin', { hideAdult: true });
+  // The no-account short-circuit needs no database and tells the two branches apart: the Komga branch discards
+  // the hideAdult preference (it returns false regardless), the owned branch honours it. (An admin no longer
+  // short-circuits: it reads which private libraries are someone else's.)
+  const ctx = await viewCtxFor(null, 'admin', { hideAdult: true });
   assert.equal(ctx.hideAdultLibraries, true, 'the owned model answered, not the "Komga enforces it" branch');
 });
