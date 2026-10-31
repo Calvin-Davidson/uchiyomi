@@ -8,14 +8,17 @@
 import { t as tr } from './i18n';
 import { saidText, type Said } from './said';
 
-export type NumberingMode = 'source' | 'posting_order';
-export type RenumberMode = 'posting_order' | 'source' | 'remap';
+// `title`: numbered from the source's titles, specials between chapters (bff sources/titleNumbers.ts).
+export type NumberingMode = 'source' | 'posting_order' | 'title';
+export type RenumberMode = 'posting_order' | 'source' | 'remap' | 'title';
 /**
  * Which plan the sheet shows: one numbering, or `next` -- the change waiting for review, else the other numbering,
  * which is GET /api/admin/series/:id/numbering's own pick when it is asked for no mode. Health's rows open `next`:
  * a row knows its series needs a look, and the server knows which change it is.
  */
 export type PlanMode = RenumberMode | 'next';
+/** What an admin picks in the series editor's Chapter numbers: `auto` hands the series back to the detector. */
+export type NumberingChoice = 'auto' | NumberingMode;
 
 /** GET /api/sources/detail `numbering`: the detector's word on the listing the add dialog is about to add. */
 export interface DetailNumbering {

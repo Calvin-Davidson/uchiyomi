@@ -84,3 +84,20 @@ export function numberingSpan(books: ReadonlyArray<{ number: number; numberEnd?:
   return { a: fmtNumber(lo), b: fmtNumber(hi) };
 }
 
+
+/**
+ * A special: a post numbered a hundredth step after a chapter (12.01, 12.02), which is how a source renumbered from its
+ * titles places a Q&A or a contest between the chapters it came between (bff sources/titleNumbers.ts), and how the
+ * Webtoons extension numbers an untitled post. Listed and readable, but not a chapter: the header leaves it out of
+ * the count, so "259 chapters" is what the series has, not 298. A half chapter (12.5) is still a chapter.
+ */
+export function isSpecialNumber(n: number): boolean {
+  const f = Math.round((n - Math.floor(n)) * 1000);
+  return f > 0 && f < 100;
+}
+
+/** How many books are chapters, specials left out. */
+export function chapterCount(books: ReadonlyArray<{ number: number }>, count: number): number {
+  const specials = books.filter((b) => isSpecialNumber(b.number)).length;
+  return specials > 0 && specials < count ? count - specials : count;
+}

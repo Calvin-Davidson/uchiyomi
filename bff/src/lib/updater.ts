@@ -25,7 +25,7 @@ import { languageRulesFor } from './copyLanguage';
 import { beginRun, endRun, stopRequested, type RunCard } from './downloadJobs';
 import { say } from './said';
 import { withOrigin } from './downloadActivity';
-import { decideNumbering, folderBusy, numberedChapters, renumberRunning, resumeRenumber, settleNumbering, NUMBERING_COLUMNS, type Settled } from './numbering';
+import { decideNumbering, folderBusy, numberedChapters, titleNumbered, renumberRunning, resumeRenumber, settleNumbering, NUMBERING_COLUMNS, type Settled } from './numbering';
 import { aliasParts, partRulesApply } from './partAlias';
 import { atHiddenNumber, isListedNotice } from './noticeChapters';
 import { hiddenNumbersOf } from './hiddenChapters';
@@ -461,6 +461,11 @@ async function visitSeries(seriesId: string, maxNew: number, opts: UpdateOpts): 
     // moment ago started this run in source numbers, with the followers' copies already in hand.
     const numbered = await numberedChapters({ seriesId, sourceId: numberingSource, persist: true }, rawNumbering);
     tagged = numbered.map((c) => ({ ...c, source: numberingSource }));
+  } else if (s.numbering === 'title' && rawNumbering && numberingSource) {
+    // Title numbers (sources/titleNumbers.ts) are the numbering source's alone; a follower keeps its own, which are
+    // the real chapter numbers the titles give -- the point of the mode -- so it stays in the list.
+    const src = numberingSource;
+    tagged = [...titleNumbered(rawNumbering).map((c) => ({ ...c, source: src })), ...tagged.filter((c) => c.source !== src)];
   }
 
   // One copy per number out of everything listed, by the release preferences: the series' own over the

@@ -379,8 +379,9 @@ function rowOf(c: SourceChapter, n: number): PostNumber {
  * posting_order: the files are at the source's numbers and move to posting numbers.
  * source:        the undo; the files are at posting numbers and go back to the source's.
  * remap:         the source changed its own numbers under the files (an extension preference flipped).
+ * title:         the files are at the source's positional numbers and move to the numbers in the titles (Tapas).
  */
-export type RenumberMode = 'posting_order' | 'source' | 'remap';
+export type RenumberMode = 'posting_order' | 'source' | 'remap' | 'title';
 
 /**
  * How a book was matched to its post, strongest first. id: the file's own stamp (lib_books.source_chapter_id).

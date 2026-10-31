@@ -299,7 +299,7 @@ test('the header counts chapters or volumes in the reader\'s words, one key to a
   assert.equal(bookCountText(1, true), '1 volume');
   assert.equal(bookCountText(7, true), '7 volumes');
   const page = code(read('app/series/page.tsx'));
-  assert.match(page, /series \? <>\{bookCountText\(series\.booksCount, mostlyVolumes\)\}<\/> : null,/, 'the header count is bare English again');
+  assert.match(page, /series \? <>\{bookCountText\(shownCount, mostlyVolumes\)\}<\/> : null,/, 'the header count is bare English again');
   assert.doesNotMatch(page, /mostlyVolumes \? 'volumes' : 'chapters'/, 'the header count is bare English again');
 });
 

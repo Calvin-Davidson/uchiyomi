@@ -51,9 +51,23 @@ import { scheduleHealthSummaryRefresh } from './healthSummary';
 import { say, saidOf, type Part, type Said } from './said';
 import { isRange } from './chapterRanges';
 import { moveHidden } from './hiddenChapters';
+import { titleNumbers, titleNumbering } from './sources/titleNumbers';
 
-/** How a series' chapters are numbered: by the source, or by posting order. NULL in the row is "automatic". */
-export type NumberingMode = 'source' | 'posting_order';
+/**
+ * A listing in title numbers: what a series numbered `title` sees of its numbering source. Stateless -- the numbers
+ * are read off the titles every time, so nothing is persisted the way a posting assignment is -- and forced: the
+ * series was put on it by the detector or by an admin, and a listing that would no longer pass the detector (a
+ * run of specials) must not drop back to positions under the files.
+ */
+export function titleNumbered<T extends SourceChapter>(raw: readonly T[]): T[] {
+  return [...titleNumbers(raw, { force: true })];
+}
+
+/**
+ * How a series' chapters are numbered: by the source, by posting order, or from the source's titles (a source that
+ * numbers by position, Tapas: sources/titleNumbers.ts). NULL in the row is "automatic".
+ */
+export type NumberingMode = 'source' | 'posting_order' | 'title';
 /** What an add or an admin asks for: `auto` lets the detector decide. */
 export type NumberingChoice = 'auto' | NumberingMode;
 
@@ -105,7 +119,10 @@ export function numberingFor<T extends SourceChapter>(raw: readonly T[], want: N
   { chapters: T[]; detect: SharedNumbering; applied: NumberingMode; assignment?: PostingAssignment<T> } {
   const detect = detectSharedNumbering(raw);
   const posting = raw.length > 0 && (want === 'posting_order' || (want === 'auto' && detect.verdict === 'strong'));
-  if (!posting) return { chapters: [...raw], detect, applied: 'source' };
+  if (!posting) {
+    const titled = raw.length > 0 && (want === 'title' || (want === 'auto' && titleNumbering(raw)));
+    return titled ? { chapters: titleNumbered(raw), detect, applied: 'title' } : { chapters: [...raw], detect, applied: 'source' };
+  }
   const assignment = assignPostingNumbers(postingSequence(raw));
   return { chapters: assignment.numbered, detect, applied: 'posting_order', assignment };
 }
@@ -234,6 +251,14 @@ export async function decideNumbering(s: { id: string } & NumberingRow, sourceId
   } else if (free && s.numbering_pending === 'posting_order' && d.verdict !== 'strong') {
     next.numbering_pending = null;
     dirty = true;
+  } else if (free && !s.numbering_pending && titleNumbering(raw)) {
+    // A source numbering by position, whose titles carry the real numbers (Tapas): the same review as posting order.
+    next.numbering_pending = 'title';
+    next.numbering_source = sourceId;
+    dirty = true;
+  } else if (free && s.numbering_pending === 'title' && !titleNumbering(raw)) {
+    next.numbering_pending = null;
+    dirty = true;
   }
   if (dirty) {
     await q('UPDATE lib_series SET numbering_note = $2::jsonb, numbering_pending = $3, numbering_source = $4 WHERE id = $1',
@@ -355,6 +380,21 @@ async function buildRenumber(s: SeriesForPlan, sourceId: string, raw: readonly S
     rows = a.rows;
     posts = a.rows.map((r) => ({ postId: r.postId, number: r.number, from: r.sourceNumber ?? null, title: r.title, publishedAt: r.publishedAt }));
     after = { numbering: 'posting_order', by: s.numbering_by === 'manual' ? 'manual' : 'auto', source: sourceId };
+  } else if (mode === 'title') {
+    // Every post to the number its title gives it, from the number its file has now: the source's own, or -- on a
+    // posting-order series -- the stored posting number.
+    const stored = s.numbering === 'posting_order' ? new Map((await storedPosts(s.id, sourceId)).map((r) => [r.postId, r.number])) : null;
+    posts = titleNumbered(raw).map((c) => ({
+      postId: c.sourceId, number: numKey(c.number), from: stored ? stored.get(c.sourceId) ?? null : numKey(c.sourceNumber ?? c.number),
+      title: c.title, publishedAt: c.publishedAt,
+    }));
+    after = { numbering: 'title', by: s.numbering_by === 'manual' ? 'manual' : 'auto', source: sourceId };
+  } else if (mode === 'source' && s.numbering === 'title') {
+    // Back from title numbers: each post from the number its title gave it to the one the source gives it.
+    posts = titleNumbered(raw).map((c) => ({
+      postId: c.sourceId, number: numKey(c.sourceNumber ?? c.number), from: numKey(c.number), title: c.title, publishedAt: c.publishedAt,
+    }));
+    after = { numbering: 'source', by: 'manual', source: null };
   } else if (mode === 'source') {
     // Back to the source's numbers: each stored post to the number the source gives it NOW (or gave it, for a
     // post it no longer lists), each parked book to the number its file had before it was parked.
@@ -965,6 +1005,20 @@ export async function addNumbering<T extends SourceChapter>(
     // Asked for the source's numbers on a series whose files are in posting numbers: the undo is a plan.
     const a = assignPostingNumbers(postingSequence(raw), stored);
     return { chapters: a.numbered, applied: 'posting_order', detect, decision: { ...kept, source: row.numbering_source, pending: 'source', note } };
+  }
+  // Title numbers (a positional source whose titles carry the real numbers), decided as posting order is above.
+  const titled = raw.length > 0 && (want === 'title'
+    || (want === 'auto' && (row?.numbering === 'title' || (row?.numbering == null && row?.numbering_by !== 'manual' && titleNumbering(raw)))));
+  if (titled) {
+    if (books && row?.numbering !== 'title') return { chapters: [...raw], applied: 'source', detect, decision: { ...kept, source: ctx.sourceId, pending: 'title', note } };
+    return {
+      chapters: titleNumbered(raw), applied: 'title', detect,
+      decision: { numbering: 'title', by: want === 'title' ? 'manual' : (row?.numbering_by ?? 'auto'), source: ctx.sourceId, pending: null, note },
+    };
+  }
+  if (row?.numbering === 'title' && books) {
+    // Asked for the source's numbers on a series whose files are in title numbers: the undo is a plan.
+    return { chapters: titleNumbered(raw), applied: 'title', detect, decision: { ...kept, source: row.numbering_source, pending: 'source', note } };
   }
   return {
     chapters: [...raw], applied: 'source', detect,

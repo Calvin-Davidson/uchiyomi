@@ -21,7 +21,7 @@ import { api, ApiError, img } from '@/lib/api';
 import type { Series } from '@/lib/types';
 import { languageName } from '@/lib/format';
 import { languageChoices } from '@/lib/editions';
-import { numLabel } from '@/lib/numbering';
+import { numLabel, type NumberingChoice, type NumberingSummary } from '@/lib/numbering';
 import { useLayer } from '@/lib/layers';
 import { useReduceEffects } from '@/lib/effects';
 import { keys, t as tr } from '@/lib/i18n';
@@ -129,7 +129,7 @@ function keepFocusIn(panel: HTMLElement, e: KeyboardEvent): void {
   else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
 }
 
-export function SeriesEditor({ id, series, tab: opening = 'details', onClose, onSaved, onOpenSources, onNewBanner }: {
+export function SeriesEditor({ id, series, tab: opening = 'details', onClose, onSaved, onOpenSources, onNewBanner, numbering, onNumbering }: {
   id: string;
   series: Series;
   /** The tab it opens on: Details from its key, Reading from the Sources sheet's language Change. */
@@ -141,6 +141,10 @@ export function SeriesEditor({ id, series, tab: opening = 'details', onClose, on
   onOpenSources?: () => void;
   /** The series page's New banner, the automatic banner's shuffle: one action, with its own notices. */
   onNewBanner?: () => Promise<void>;
+  /** How its chapters are numbered (admins: the listing's `numbering`), for the Updates tab's Chapter numbers. */
+  numbering?: NumberingSummary | null;
+  /** A numbering picked there: the page closes this and opens the plan, since a renumber renames files. */
+  onNumbering?: (mode: NumberingChoice) => void;
 }) {
   // On the notices' layer stack (lib/layers.ts), keeping the phone's nav band free as Modal does: below md the
   // sheet's last rows scroll clear of the bar, from md to lg the panel ends above it, and from lg up it ends 7 rem
@@ -287,7 +291,7 @@ export function SeriesEditor({ id, series, tab: opening = 'details', onClose, on
                   <ReadingPane id={id} series={series} meta={meta} save={saveMeta} onSaved={onSaved} />
                 </Pane>
                 <Pane id={paneId('updates')} tab={tabId('updates')} shown={fields === 'updates'} name="updates">
-                  <UpdatesPane id={id} series={series} onSaved={onSaved} onOpenSources={onOpenSources} />
+                  <UpdatesPane id={id} series={series} onSaved={onSaved} onOpenSources={onOpenSources} numbering={numbering} onNumbering={onNumbering} />
                 </Pane>
                 <Pane id={paneId('files')} tab={tabId('files')} shown={fields === 'files'} name="files">
                   <FilesPane id={id} series={series} onSaved={onSaved} />
@@ -523,7 +527,10 @@ function LanguageRow({ id, series, onSaved }: { id: string; series: Series; onSa
 
 /* =============================== Updates =============================== */
 
-function UpdatesPane({ id, series, onSaved, onOpenSources }: { id: string; series: Series; onSaved: () => void; onOpenSources?: () => void }) {
+function UpdatesPane({ id, series, onSaved, onOpenSources, numbering, onNumbering }: {
+  id: string; series: Series; onSaved: () => void; onOpenSources?: () => void;
+  numbering?: NumberingSummary | null; onNumbering?: (mode: NumberingChoice) => void;
+}) {
   const toast = useToast();
   const qc = useQueryClient();
   const [autoUpdate, setAutoUpdate] = useState(series.autoUpdate !== false);
@@ -597,10 +604,36 @@ function UpdatesPane({ id, series, onSaved, onOpenSources }: { id: string; serie
           Sources & translations sheet, beside the statistics they are decided from. A way there where the page can
           open it, else one line saying where they went, so an admin who learned them here is not left to conclude
           they are gone. */}
+      {onNumbering && <NumberingRow numbering={numbering ?? null} onPick={onNumbering} />}
       {onOpenSources
         ? <LinkRow label={tr('Sources & translations')} help={tr('Where its chapters come from, and which translation groups come first.')} onClick={onOpenSources} />
         : <p className="py-3 text-[11px] text-fog-500">{tr('Translation groups are ranked in Sources & translations')}</p>}
     </>
+  );
+}
+
+/**
+ * Chapter numbers: Automatic (the detector decides), the source's own, posting order, or from the source's titles (a
+ * source that numbers every post in order, specials included: Tapas). Nothing is saved here: picking one hands the mode
+ * to the page, which opens the plan sheet, because a renumber renames files and is only applied once reviewed.
+ * Automatic is the one pick with nothing to rename, and the page saves it at once. While a change waits for review
+ * the row is locked: the notice above the chapter list owns that plan.
+ */
+function NumberingRow({ numbering, onPick }: { numbering: NumberingSummary | null; onPick: (mode: NumberingChoice) => void }) {
+  const sid = useId();
+  const value: NumberingChoice = numbering?.by === 'manual' || numbering?.mode ? numbering?.mode ?? 'source' : 'auto';
+  const pending = !!numbering?.pending;
+  return (
+    <Row label={tr('Chapter numbers')} htmlFor={sid} stacked
+      help={pending ? tr('A numbering change is waiting for review above the chapter list.')
+        : tr('How chapters are numbered. Changing it shows which files get renamed before anything happens.')}>
+      <select id={sid} value={value} disabled={pending} onChange={(e) => onPick(e.target.value as NumberingChoice)} className="field" data-numbering-choice>
+        <option value="auto">{tr('Automatic')}</option>
+        <option value="source">{tr('The source’s numbers')}</option>
+        <option value="posting_order">{tr('Posting order')}</option>
+        <option value="title">{tr('From chapter titles')}</option>
+      </select>
+    </Row>
   );
 }
 

@@ -2,7 +2,7 @@
   "_meta": {
     "language": "pt-BR",
     "note": "Machine-assisted translation, reviewed for tone but not by a native speaker. Corrections are very welcome: edit this file and open a pull request. Keys are the English source strings, so a missing entry falls back to English.",
-    "strings": 4522
+    "strings": 4530
   },
   "1 check found something": "1 verificação encontrou algo",
   "1 member": "1 membro",
@@ -4525,5 +4525,13 @@
   "Lettering may be missing": "Podem faltar partes das letras",
   "Low contrast": "Baixo contraste",
   "Checks unavailable": "Verificações indisponíveis",
-  "Other checks need review": "Outras verificações precisam de revisão"
+  "Other checks need review": "Outras verificações precisam de revisão",
+  "Number chapters from titles": "Numerar capítulos pelos títulos",
+  "{source} numbers its posts in order, specials included, while their titles carry the real chapter numbers. New chapters wait until the renumbering is reviewed.": "{source} numera suas publicações em ordem, incluindo especiais, enquanto os títulos trazem os números reais dos capítulos. Novos capítulos aguardam até que a renumeração seja revisada.",
+  "Chapter numbers": "Números dos capítulos",
+  "A numbering change is waiting for review above the chapter list.": "Uma mudança de numeração aguarda revisão acima da lista de capítulos.",
+  "How chapters are numbered. Changing it shows which files get renamed before anything happens.": "Como os capítulos são numerados. Ao mudar, mostra quais arquivos serão renomeados antes de qualquer coisa.",
+  "The source’s numbers": "Os números da fonte",
+  "Posting order": "Ordem de publicação",
+  "From chapter titles": "Pelos títulos dos capítulos"
 }

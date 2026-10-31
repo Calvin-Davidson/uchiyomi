@@ -97,7 +97,7 @@ import { paceLevel, rateKeyOf, restLeft } from '../lib/pace';
 import { haveNumbers } from '../lib/libraryNumbers';
 import { heldBy, isRange, rangeEnd, rawRangeEnd } from '../lib/chapterRanges';
 import {
-  addNumbering, numberingFor, numberedChapters, stampAddNumbering, registerBusyProbe, onRenumbered, POSTING_ORDER_REFUSAL,
+  addNumbering, numberingFor, numberedChapters, titleNumbered, stampAddNumbering, registerBusyProbe, onRenumbered, POSTING_ORDER_REFUSAL,
   type NumberingChoice,
 } from '../lib/numbering';
 import { numKey } from '../lib/postingOrder';
@@ -2802,6 +2802,7 @@ export default async function sourceRoutes(app: FastifyInstance) {
           // The series' own source, in the numbers the series keeps (#116): a posting-order series holds chapter
           // 20, and the source's own list calls that post 2. Read-only -- the check is what persists new posts.
           if (posting && f.pinned && raw.length) raw = await numberedChapters({ seriesId, sourceId: f.source }, raw);
+          else if (s.numbering === 'title' && f.pinned && raw.length) raw = titleNumbered(raw);
         }
         // One copy per number BEFORE the list is assessed or stored in the plan. `authorise` filters the
         // stored list by number, so a plan holding two copies of chapter 5 would answer a fill of [5] with

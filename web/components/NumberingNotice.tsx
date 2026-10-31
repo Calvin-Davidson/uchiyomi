@@ -69,6 +69,14 @@ export function NumberingNotice({ seriesId, numbering, isAdmin, onReview }: {
     heading = tr('Going back to the source’s numbers');
     body = tr('New chapters wait until the renaming is reviewed.');
     keys = [{ label: tr('Review'), run: () => onReview('source'), primary: true }];
+  } else if (kind === 'review' && n.pending === 'title') {
+    tone = 'amber';
+    heading = tr('Chapter numbers need a review');
+    body = tr('{source} numbers its posts in order, specials included, while their titles carry the real chapter numbers. New chapters wait until the renumbering is reviewed.', { source });
+    keys = [
+      { label: tr('Review renumbering'), run: () => onReview('title'), primary: true },
+      { label: tr('Keep the source’s numbers'), run: () => void keep() },
+    ];
   } else if (kind === 'review') {
     tone = 'amber';
     heading = tr('Chapter numbers need a review');

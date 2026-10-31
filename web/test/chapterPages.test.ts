@@ -91,3 +91,14 @@ test('the chapter pager shows no count beside the chapter numbers', () => {
   assert.match(page, /span \? <>\{tr\('Ch\. \{a\}–\{b\}', span\)\}<\/> : null,/);
 });
 
+
+test('specials (a hundredth step after a chapter) are left out of the count and the span', async () => {
+  const { chapterCount, isSpecialNumber, numberingSpan } = await import('../lib/chapterPages');
+  assert.equal(isSpecialNumber(10.01), true);
+  assert.equal(isSpecialNumber(10.5), false);
+  assert.equal(isSpecialNumber(10), false);
+  const books = [1, 2, 2.01, 2.02, 2.5, 3].map((number) => ({ number }));
+  assert.equal(chapterCount(books, books.length), 4);
+  const plain = [1, 2, 2.01, 3].map((number) => ({ number }));
+  assert.equal(numberingSpan(plain.filter((b) => !isSpecialNumber(b.number)), chapterCount(plain, plain.length)), null);
+});

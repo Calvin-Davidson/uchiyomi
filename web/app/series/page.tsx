@@ -34,7 +34,7 @@ import { normGroup } from '@/lib/scanlators';
 import { GHOST_CAP, mergeRows, whyLabel, runLabel, chunkNumbers, countsAsBehind, MARK_CHUNK, heldBy, lastOf, wholesHeld, prunedWords, deliberatelyDeleted, ghostOfDeleted, type Row } from '@/lib/chapterRows';
 import { chParam, landingNumber } from '@/lib/healthLinks';
 import { effectsReduced } from '@/lib/effects';
-import { clampPage, numberingSpan, pageCount, pageLabel, pageOf, pageSizeFor, pageSlice } from '@/lib/chapterPages';
+import { clampPage, chapterCount, isSpecialNumber, numberingSpan, pageCount, pageLabel, pageOf, pageSizeFor, pageSlice } from '@/lib/chapterPages';
 import { openRuns, showAllChaptersOn } from '@/lib/showAllChapters';
 import { buttonsClass, compactChaptersOn, dotHide, rowClass, thumbHide } from '@/lib/compactChapters';
 import { chapterRowsClass, chapterViewOn, setChapterView, type ChapterView } from '@/lib/chapterView';
@@ -1795,14 +1795,16 @@ function SeriesInner() {
     </div>
   );
 
-  const span = series && books && !mostlyVolumes ? numberingSpan(books.content, series.booksCount) : null;
+  // Specials (a Q&A between two chapters, numbered 12.01) are listed but not counted: "259 chapters", not 298.
+  const shownCount = series ? (books && !mostlyVolumes ? chapterCount(books.content, series.booksCount) : series.booksCount) : 0;
+  const span = series && books && !mostlyVolumes ? numberingSpan(books.content.filter((b) => !isSpecialNumber(b.number)), shownCount) : null;
   const metaBits: ReactNode[] = [
     // v0.100.0 (#338): each name on the author line opens the Library showing that person's series. Only the author's: the
     // publisher shown in its place when there is none names no one the Library could list.
     meta?.author ? <AuthorLinks line={meta.author} />
       : author ? <span className="text-fog-300">{tr('by {author}', { author: `\u2068${author}\u2069` })}</span> : null,
     meta?.status ? <span className="capitalize">{statusText(meta.status)}</span> : null,
-    series ? <>{bookCountText(series.booksCount, mostlyVolumes)}</> : null,
+    series ? <>{bookCountText(shownCount, mostlyVolumes)}</> : null,
     // Their numbers, when they do not run 1 to the count (half chapters, a chapter 0, gaps): "149 chapters · Ch. 0–129".
     span ? <>{tr('Ch. {a}–{b}', span)}</> : null,
     (series?.yomi?.unread ?? series?.booksUnreadCount ?? 0) > 0 ? <span className="text-accent">{tr('{n} unread', { n: series!.yomi?.unread ?? series!.booksUnreadCount })}</span> : null,
@@ -2241,7 +2243,19 @@ function SeriesInner() {
           onSaved={() => { for (const k of [['series', id], ['series-books', id], ['home'], ['library']]) qc.invalidateQueries({ queryKey: k }); }}
           // Its Sources & translations link closes it first: one at a time, as the sheets above.
           onOpenSources={() => { setEditing(null); setSourcesOpen(true); }}
-          onNewBanner={newBanner} />
+          onNewBanner={newBanner}
+          numbering={isAdmin ? listing?.numbering ?? null : null}
+          onNumbering={isAdmin ? (m) => {
+            // Automatic renames nothing: saved here. Every other choice is a plan to review first (NumberingSheet).
+            if (m === 'auto') {
+              void api(`/api/admin/series/${encodeURIComponent(id)}/numbering`, { method: 'POST', json: { mode: 'auto' } })
+                .then(() => qc.invalidateQueries({ queryKey: ['series-listing', id] }))
+                .catch(() => toast(tr('Could not change that'), 'error'));
+              return;
+            }
+            setEditing(null);
+            setNumberingSheet(m);
+          } : undefined} />
       )}
       {editChapter && (
         <ChapterEditModal book={editChapter} onClose={() => setEditChapter(null)}
