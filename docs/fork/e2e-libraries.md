@@ -10,9 +10,11 @@ can't read it. Your browser opens it.
 2. Download a series the usual way.
 3. On its card choose **Move to vault**. The server encrypts it and then removes it from the library, the same way an admin
    would with Remove, Delete files and Forget. That clears its rows, progress, bookmarks and cached images.
-4. **Vault** in the menu has its own library, series page and long-strip reader. Progress is saved encrypted.
-5. **Move out of vault** on a series page decrypts it back into the downloads folder as CBZ files with `ComicInfo.xml`,
-   and a scan picks it up as a new series.
+4. **Vault** in the menu opens the ordinary Library on the Vault tab. Series pages, the reader and progress work as they
+   do for any series: the service worker (`web/public/e2e-sw.js`) answers the app's own API calls for vault series,
+   decrypting as it goes. **Manage vault** (`/vault`) has unlocking, members and deleting.
+5. **Move out of vault** on a vault series' card decrypts it back into the downloads folder as CBZ files with
+   `ComicInfo.xml`, and a scan picks it up as a new series.
 
 ## How it works
 
@@ -41,6 +43,11 @@ item key ──AES-256-GCM──▶ manifest, cover, pages, progress            
 ## Limits
 
 - A vault series isn't followed: no new chapters, trackers, OPDS or Komga API. Move it out, update it, move it back in.
+- Features that need the server to read the series show nothing for it: similar series, comments, gaps, bookmarks,
+  notes, versions, translation, page resizing (pages come full size), admin edits, collections and favourites.
+- Vault series are only in the Vault tab, not in the Library's All view, Home or search.
+- The worker copies the server's answer shapes (`web/lib/types.ts`). `web/test/e2eWorker.test.ts` checks them; an
+  upstream change to those endpoints can need a matching change in the worker.
 - Moving out brings back the files and `ComicInfo.xml` details, not the source link, overrides or vault progress.
 - Removing a member doesn't rotate the vault key.
 - Needs HTTPS (or localhost) for WebCrypto. Accounts without a password (SSO, passwordless profiles) can't unlock a vault.
@@ -52,8 +59,9 @@ item key ──AES-256-GCM──▶ manifest, cover, pages, progress            
 | Where | What |
 | --- | --- |
 | `bff/src/fork/e2e/` | `schema.ts` (own tables and migration), `crypto.ts`, `move.ts` (move in and out), `routes.ts` (`/api/e2e/*`), `index.ts` |
-| `web/fork/e2e/` | `crypto.ts`, `device.ts` (IndexedDB device key), `session.ts` (keys, sign-in hooks), `items.ts` (opening items), `hooks.tsx`, `VaultPage.tsx` |
-| `bff/test/e2eCrypto.test.ts`, `web/test/e2eVault.test.ts` | tests |
+| `web/fork/e2e/` | `crypto.ts`, `device.ts` (IndexedDB device key), `session.ts` (keys, sign-in hooks), `hooks.tsx` (menu items), `VaultPage.tsx` (Manage vault) |
+| `web/public/e2e-sw.js` | answers the Library, series and reader APIs for vault series, decrypted |
+| `bff/test/e2eCrypto.test.ts`, `web/test/e2eVault.test.ts`, `web/test/e2eWorker.test.ts` | tests |
 
 Upstream files change by one to three lines each, all marked `fork-only`:
 
@@ -62,6 +70,7 @@ Upstream files change by one to three lines each, all marked `fork-only`:
 | `bff/src/server.ts` | `registerE2E(app)` |
 | `web/components/Sidebar.tsx`, `SeriesMenu.tsx` | Vault menu item, Move to vault |
 | `web/lib/auth.tsx`, `web/components/ProfileAccount.tsx` | unlock at sign-in, forget at sign-out, re-wrap on password change |
+| `web/public/sw.js` | `importScripts('/e2e-sw.js')` |
 | `web/app/vault/page.tsx` (new), `web/app/globals.css` | the page; Tailwind scans `web/fork/` |
 
 `E2E_LIBRARIES=0` turns it off: no tables, no routes. Nothing runs in the background.

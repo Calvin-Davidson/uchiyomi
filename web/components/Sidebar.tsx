@@ -165,7 +165,7 @@ export function Sidebar() {
               sub: ring.show && ring.label ? { text: `${tr('Server downloads')} · ${ring.label}`, href: downloadsHref() } : undefined,
             })
             : link(i))}
-          {vaultNav && link(vaultNav)}{/* fork-only: e2e vault */}
+          {vaultNav && link(vaultNav, { sub: vaultNav.sub })}{/* fork-only: e2e vault */}
           <div className="my-2 h-px shrink-0 bg-white/[0.06]" aria-hidden />
           {more.map((i) => link(i))}
           <div className="flex-1" />

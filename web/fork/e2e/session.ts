@@ -116,6 +116,8 @@ export function vaultAfterLogin(userId: string, password: string): void {
     const status = await fetchStatus();
     if (!status) return;
     await unlockWithPassword(userId, password, true);
+    // The service worker (public/e2e-sw.js) opens the vault again with the key this device now holds.
+    try { navigator.serviceWorker?.controller?.postMessage({ e2e: 'reset' }); } catch { /* no worker */ }
   })().catch(() => { /* the vault banner offers the unlock again */ });
 }
 
