@@ -41,10 +41,6 @@ CREATE TABLE IF NOT EXISTS e2e_key_wraps (
 CREATE INDEX IF NOT EXISTS e2e_key_wraps_user_idx ON e2e_key_wraps (user_id);
 
 -- v1 (a standalone upload store) was never released; its tables are replaced by vaults on real libraries.
-DROP TABLE IF EXISTS e2e_items;
-DROP TABLE IF EXISTS e2e_library_members;
-DROP TABLE IF EXISTS e2e_libraries;
-
 CREATE TABLE IF NOT EXISTS e2e_vaults (
   library_id  text PRIMARY KEY REFERENCES libraries(id) ON DELETE CASCADE,
   owner_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -73,6 +69,16 @@ CREATE TABLE IF NOT EXISTS e2e_sealed (
   error      text,
   sealed_at  timestamptz NOT NULL DEFAULT now()
 );
+
+-- v1 cleanup. Its key pairs were wrapped under a separate vault passphrase, which nothing asks for any more: a key with no
+-- password wrap and in no vault is dropped, so the next sign-in makes a fresh one under the account password.
+DELETE FROM e2e_user_keys k
+ WHERE NOT EXISTS (SELECT 1 FROM e2e_key_wraps w WHERE w.user_id = k.user_id AND w.kind = 'password')
+   AND NOT EXISTS (SELECT 1 FROM e2e_vault_members m WHERE m.user_id = k.user_id);
+DROP TABLE IF EXISTS e2e_items;
+DROP TABLE IF EXISTS e2e_library_members;
+DROP TABLE IF EXISTS e2e_libraries;
+
 `;
 
 export async function migrateE2E(): Promise<void> {

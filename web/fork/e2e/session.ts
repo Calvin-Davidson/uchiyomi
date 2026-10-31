@@ -52,10 +52,18 @@ const secure = (): boolean => typeof window !== 'undefined' && !!window.isSecure
  * Throws Error('wrong_password') when the password does not open the key and this device holds no copy to re-wrap.
  */
 export async function unlockWithPassword(userId: string, password: string, verified: boolean): Promise<void> {
-  const keys = await api<KeysDoc>('/api/e2e/keys').catch((e) => {
+  let keys = await api<KeysDoc>('/api/e2e/keys').catch((e) => {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
   });
+  // A key with no password wrap (the first version's separate vault passphrase) that opens no vault: start over.
+  if (keys && !keys.wraps.some((w) => w.kind === 'password') && !(await hasDeviceKey(userId))) {
+    const status = await fetchStatus();
+    if (status && !status.vaults.length) {
+      await api('/api/e2e/keys', { method: 'DELETE' });
+      keys = null;
+    }
+  }
   if (!keys) {
     if (!verified) await api('/api/e2e/verify-password', { json: { password } }).catch((e) => {
       throw errorCode(e) === 'wrong_password' ? new Error('wrong_password') : e;
