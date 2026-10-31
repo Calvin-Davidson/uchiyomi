@@ -1,0 +1,122 @@
+name: Develop images
+
+# Publishes multi-arch Docker images to GHCR on every push to `develop` (i.e. every merged PR).
+# Tags: `:develop` (moving) and `:develop-<short sha>` (immutable). Never touches `:latest` or version tags --
+# those stay owned by release.yml.
+#
+# Images go to ghcr.io/<repository owner, lowercased>, so a fork publishes to its own namespace.
+# Same build shape as release.yml, for the same reasons: each architecture builds on a native runner (QEMU
+# broke the native modules) and pushes by digest, then one merge job writes the tag over both.
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: develop-images
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: build ${{ matrix.service }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [bff, web, aio]
+        arch: [amd64, arm64]
+        include:
+          - { service: bff, name: uchiyomi-bff, context: ./bff, file: ./bff/Dockerfile }
+          - { service: web, name: uchiyomi-web, context: ./web, file: ./web/Dockerfile }
+          - { service: aio, name: uchiyomi,     context: .,     file: ./Dockerfile.aio }
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.name }}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push ${{ matrix.service }} for ${{ matrix.arch }}, by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.title=Uchiyomi (${{ matrix.service }})
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=develop
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=MPL-2.0
+      - name: Record the digest
+        run: |
+          digest='${{ steps.build.outputs.digest }}'
+          case "$digest" in
+            sha256:*) ;;
+            *) echo "::error::empty or malformed digest for ${{ matrix.service }}/${{ matrix.arch }}: '$digest'"; exit 1 ;;
+          esac
+          mkdir -p digests
+          echo "$digest" > "digests/${{ matrix.service }}-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.service }}-${{ matrix.arch }}
+          path: digests/*
+          retention-days: 1
+
+  merge:
+    name: merge ${{ matrix.service }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: bff, name: uchiyomi-bff }
+          - { service: web, name: uchiyomi-web }
+          - { service: aio, name: uchiyomi }
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-${{ matrix.service }}-*
+          path: digests
+          merge-multiple: true
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: Tag develop and develop-<sha> over both architectures
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.name }}"
+          short="${GITHUB_SHA::7}"
+          refs=""
+          for f in digests/${{ matrix.service }}-*; do refs="$refs $image@$(cat "$f")"; done
+          docker buildx imagetools create -t "$image:develop" -t "$image:develop-$short" $refs
+          # Inspect into a variable, not a pipe: an early-exiting grep SIGPIPEs buildx (see release.yml).
+          out=$(docker buildx imagetools inspect "$image:develop-$short")
+          printf '%s\n' "$out"
+          for arch in amd64 arm64; do
+            grep -q "linux/$arch" <<<"$out" \
+              || { echo "::error::$image:develop-$short has no linux/$arch"; exit 1; }
+          done
+          echo "::notice title=$image::develop, develop-$short"
