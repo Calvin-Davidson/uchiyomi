@@ -1,5 +1,5 @@
-// Fork-only: what the SERVER encrypts when a series is moved into a vault (src/fork/e2e/crypto.ts, Node crypto) opens in
-// the BROWSER's code (web/fork/e2e/crypto.ts, WebCrypto) -- the two halves are written separately and must agree byte
+// Fork-only: what the SERVER encrypts when a series is moved into a vault (src/fork/vaults/crypto.ts, Node crypto) opens in
+// the BROWSER's code (web/fork/vaults/crypto.ts, WebCrypto) -- the two halves are written separately and must agree byte
 // for byte -- and a chapter file's offset table finds each page. No database.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,8 +11,8 @@ const VAULT = 'vault_0123456789abcdef';
 const ITEM = '33333333-3333-4333-8333-333333333333';
 
 test("an item the server encrypts opens with the vault's private key in the browser's code, and with nothing else", async () => {
-  const S = await import('../src/fork/e2e/crypto');
-  const W = await import('../../web/fork/e2e/crypto');
+  const S = await import('../src/fork/vaults/crypto');
+  const W = await import('../../web/fork/vaults/crypto');
   const vault = await W.generateIdentity();
   const other = await W.generateIdentity();
   const key = S.newItemKey(S.vaultPublicKey(W.b64u(vault.publicSpki)), VAULT, ITEM);

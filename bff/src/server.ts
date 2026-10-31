@@ -76,7 +76,7 @@ import notifyRoutes from './routes/notify';
 import translateRoutes from './routes/translate';
 import { stopEngine } from './lib/translate/engine';
 import commentRoutes from './routes/comments';
-import { registerE2E } from './fork/e2e'; // fork-only: e2e encrypted libraries (src/fork/e2e)
+import { registerE2E } from './fork/vaults'; // fork-only: e2e encrypted libraries (src/fork/vaults)
 import { isDesktop } from './lib/desktop';
 import { installDesktopGuards } from './lib/desktopGuard';
 import { ensureDesktopUser } from './lib/desktopUser';
@@ -273,7 +273,7 @@ async function main() {
   await app.register(translateRoutes);
   // Chapter comments and reactions (v0.87.0): everywhere, as every plugin is; desktop answers 404 for them (lib/desktop.ts).
   await app.register(commentRoutes);
-  await registerE2E(app); // fork-only: e2e encrypted libraries, own tables and routes (src/fork/e2e)
+  await registerE2E(app); // fork-only: e2e encrypted libraries, own tables and routes (src/fork/vaults)
   // Neither OPDS nor the Komga-compatible API exists on desktop: both are for OTHER devices reading this
   // library, and the desktop server is reachable from this PC only (they return with "Share with my phone").
   if (!isDesktop()) await app.register(opdsRoutes);

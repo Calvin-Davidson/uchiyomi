@@ -1,8 +1,8 @@
-// Fork-only: the vault's browser crypto (web/fork/e2e/crypto.ts), run against Node's WebCrypto -- the same API the
+// Fork-only: the vault's browser crypto (web/fork/vaults/crypto.ts), run against Node's WebCrypto -- the same API the
 // browser has. That pages the SERVER seals open here is bff/test/e2eCrypto.test.ts's.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as C from '../fork/e2e/crypto';
+import * as C from '../fork/vaults/crypto';
 
 const ALICE = '11111111-1111-4111-8111-111111111111';
 const BOB = '22222222-2222-4222-8222-222222222222';

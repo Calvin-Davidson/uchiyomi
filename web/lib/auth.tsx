@@ -12,7 +12,7 @@ import { setAdultShown } from './adult';
 import { isDesktop, serverReachableHint, untilReachable } from './desktop';
 import { t as tr } from './i18n';
 import type { AvatarFrame } from './badges';
-import { vaultAfterLogin, vaultForget } from '@/fork/e2e/session'; // fork-only: e2e vault
+import { vaultAfterLogin, vaultForget } from '@/fork/vaults/session'; // fork-only: e2e vault
 
 /** `frame` since v0.89.0 (#267): the frame one of the account's badges unlocked (lib/badges.ts). */
 export interface Avatar { emoji?: string; color?: string; frame?: AvatarFrame }

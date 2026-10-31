@@ -1,6 +1,6 @@
 // Fork-only: end-to-end encrypted vaults -- the one entry point server.ts calls.
 //
-// Everything this feature needs on the server lives under src/fork/e2e/, and server.ts (registerE2E) is the only
+// Everything this feature needs on the server lives under src/fork/vaults/, and server.ts (registerE2E) is the only
 // upstream file that knows about it. A series moved into a vault leaves the library entirely (move.ts), so no upstream
 // query, scan or download ever meets vault content. Its tables are its own (schema.ts), created here rather than in
 // lib/migrate.ts. Nothing runs in the background.

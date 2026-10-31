@@ -1,7 +1,7 @@
 /* Fork-only: shows vault series in the ordinary Library, series page and reader, decrypted inside the service worker.
  *
  * Loaded by one `importScripts` line at the top of sw.js, so its fetch listener runs first. A series in a vault is not in
- * the server's library (bff/src/fork/e2e/move.ts): the server only holds ciphertext. This worker opens it with the key
+ * the server's library (bff/src/fork/vaults/move.ts): the server only holds ciphertext. This worker opens it with the key
  * this device holds, and answers the app's own API calls for it in the shapes the server would use (web/lib/types.ts):
  *
  *   GET  /api/libraries                     the real list, plus "Vault"
@@ -12,8 +12,8 @@
  *   GET  /img/series|books/vlt-…            covers, chapter thumbnails, pages (decrypted)
  *   anything else about a vault series      an empty answer (GET) or 403 (a write the server can't do on ciphertext)
  *
- * Keys: this device's member private key is in IndexedDB (`uchiyomi-e2e` / `device`, web/fork/e2e/device.ts) under a
- * non-extractable device key. Formats must match web/fork/e2e/crypto.ts and bff/src/fork/e2e/crypto.ts.
+ * Keys: this device's member private key is in IndexedDB (`uchiyomi-e2e` / `device`, web/fork/vaults/device.ts) under a
+ * non-extractable device key. Formats must match web/fork/vaults/crypto.ts and bff/src/fork/vaults/crypto.ts.
  */
 (() => {
   const EC = { name: 'ECDH', namedCurve: 'P-256' };

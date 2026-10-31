@@ -10,7 +10,7 @@ import { useToast } from './Toast';
 import { useContextMenu, type MenuItem } from './ContextMenu';
 import { useArchiveEnqueue } from './ArchiveQueue';
 import { MoveToLibrary } from './MoveToLibrary';
-import { useVaultMenu } from '@/fork/e2e/hooks'; // fork-only: e2e vault
+import { useVaultMenu } from '@/fork/vaults/hooks'; // fork-only: e2e vault
 
 /**
  * A series card's menu (#100): the few things worth doing without opening the series, from wherever it is on

@@ -13,7 +13,7 @@
 @source "./";
 @source "../components/";
 @source "../lib/";
-@source "../fork/"; /* fork-only: e2e encrypted libraries (web/fork/e2e) */
+@source "../fork/"; /* fork-only: e2e encrypted libraries (web/fork/vaults) */
 
 @theme {
   /* Two breakpoints past Tailwind's own, for the cover grids on large displays.

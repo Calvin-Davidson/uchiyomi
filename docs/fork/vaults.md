@@ -12,7 +12,7 @@ can't read it. Your browser opens it.
    would with Remove, Delete files and Forget. That clears its rows, progress, bookmarks and cached images.
 4. **Vault** in the menu opens the ordinary Library on the Vault tab. Series pages, the reader and progress work as they
    do for any series: the service worker (`web/public/e2e-sw.js`) answers the app's own API calls for vault series,
-   decrypting as it goes. **Manage vault** (`/vault`) has unlocking, members and deleting.
+   decrypting as it goes. `/vault` unlocks it on this device, then opens the Library filtered to it. A vault belongs to one account and is never shared.
 5. **Move out of vault** on a vault series' card decrypts it back into the downloads folder as CBZ files with
    `ComicInfo.xml`, and a scan picks it up as a new series.
 
@@ -58,8 +58,8 @@ item key ──AES-256-GCM──▶ manifest, cover, pages, progress            
 
 | Where | What |
 | --- | --- |
-| `bff/src/fork/e2e/` | `schema.ts` (own tables and migration), `crypto.ts`, `move.ts` (move in and out), `routes.ts` (`/api/e2e/*`), `index.ts` |
-| `web/fork/e2e/` | `crypto.ts`, `device.ts` (IndexedDB device key), `session.ts` (keys, sign-in hooks), `hooks.tsx` (menu items), `VaultPage.tsx` (Manage vault) |
+| `bff/src/fork/vaults/` | `schema.ts` (own tables and migration), `crypto.ts`, `move.ts` (move in and out), `routes.ts` (`/api/e2e/*`), `index.ts` |
+| `web/fork/vaults/` | `crypto.ts`, `device.ts` (IndexedDB device key), `session.ts` (keys, sign-in hooks), `hooks.tsx` (menu items), `VaultPage.tsx` (Manage vault) |
 | `web/public/e2e-sw.js` | answers the Library, series and reader APIs for vault series, decrypted |
 | `bff/test/e2eCrypto.test.ts`, `web/test/e2eVault.test.ts`, `web/test/e2eWorker.test.ts` | tests |
 

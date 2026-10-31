@@ -13,7 +13,7 @@ import { IcCheck, IcGrid, IcLogOut, IcUser } from '@/components/icons';
 import { t as tr } from '@/lib/i18n';
 import { SETTINGS_GRID, Section, Row, useAutosave } from '@/components/settings';
 import { linkResultText, ssoOnly, useAuthConfig, type AuthConfig } from '@/lib/authConfig';
-import { vaultPasswordChanged } from '@/fork/e2e/session'; // fork-only: e2e vault
+import { vaultPasswordChanged } from '@/fork/vaults/session'; // fork-only: e2e vault
 
 /**
  * The profile's Account tab: Signed in as · Two-factor authentication · Active sessions · Sign out.
