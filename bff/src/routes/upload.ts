@@ -30,6 +30,7 @@ import { Transform, type Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { z } from 'zod';
 import { one } from '../lib/db';
+import { visibleToAll } from '../lib/visibility';
 import { actsAsAdmin, authenticate, userIdOf } from '../lib/auth';
 import { logAudit } from '../lib/audit';
 import { DL_ROOT, persistScan } from '../lib/library';
@@ -151,7 +152,7 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
     // a deleted series (lib/library.ts), so a file put there would never be seen.
     const known = await one<{ deleted_at: string | null }>(
       'SELECT deleted_at FROM lib_series WHERE folder = $1 ORDER BY (deleted_at IS NOT NULL) LIMIT 1', [folder]);
-    if (p.data.fresh && (known || await one('SELECT 1 FROM lib_series WHERE deleted_at IS NULL AND merged_into IS NULL AND lower(title) = lower($1) LIMIT 1', [p.data.title]))) {
+    if (p.data.fresh && (known || await one(`SELECT 1 FROM lib_series s WHERE ${visibleToAll('s')} AND lower(s.title) = lower($1) LIMIT 1`, [p.data.title]))) {
       return refuse(reply, { code: 409, error: 'taken', message: 'A series by that title is already here. Pick another title.' });
     }
     if (known?.deleted_at) return refuse(reply, { code: 409, error: 'deleted', message: 'A series of that name was deleted. Restore it, or pick another title.' });
