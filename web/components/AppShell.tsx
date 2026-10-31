@@ -24,6 +24,7 @@ import { IncognitoBanner, useIncognito } from './IncognitoBanner';
 import { AdultBanner } from './AdultToggle';
 import { usePrefetchSeriesOnClick } from '@/lib/seriesPrefetch';
 import { scrollMemory } from '@/lib/scrollMemory';
+import { VaultBanner } from '@/fork/e2e/hooks'; // fork-only: e2e vault
 
 function Splash() {
   return (
@@ -153,6 +154,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {status === 'authed' && <AdultBanner />}
         {status === 'authed' && <HealthBanner />}
         {status === 'authed' && <TrackerAlert />}
+        {status === 'authed' && <VaultBanner />}{/* fork-only: e2e vault locked on this device */}
       </div>
       <TopNav onSearchFocus={() => { setPaletteSeed(''); setPalette(true); }} />
       {wide && <Sidebar />}

@@ -10,6 +10,7 @@ import { useToast } from './Toast';
 import { useContextMenu, type MenuItem } from './ContextMenu';
 import { useArchiveEnqueue } from './ArchiveQueue';
 import { MoveToLibrary } from './MoveToLibrary';
+import { useVaultMenu } from '@/fork/e2e/hooks'; // fork-only: e2e vault
 
 /**
  * A series card's menu (#100): the few things worth doing without opening the series, from wherever it is on
@@ -44,6 +45,8 @@ export function useSeriesMenu(series: Series) {
     } catch { toast(tr('Could not do that'), 'error'); }
   };
 
+  const vaultItems = useVaultMenu(series, settle); // fork-only: Move to vault
+
   // Move library (admins): the picker is a dialog, so the menu's `element` carries it along with the menu itself.
   const [moving, setMoving] = useState(false);
   const [moveBusy, setMoveBusy] = useState(false);
@@ -73,6 +76,7 @@ export function useSeriesMenu(series: Series) {
       },
     }] : []),
     ...(isAdmin ? [{ label: tr('Move library'), disabled: offline, onSelect: () => setMoving(true) }] : []),
+    ...vaultItems.map((v) => ({ ...v, disabled: offline })), // fork-only: e2e vault
     // What is missing is the server's to work out; the notice says when there was nothing older to fetch.
     ...(canDownload(user) ? [{
       label: tr('Archive slowly'), divider: !isAdmin, disabled: offline,

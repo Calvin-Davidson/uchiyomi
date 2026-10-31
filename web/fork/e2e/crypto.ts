@@ -1,18 +1,16 @@
-// Fork-only: the browser side of end-to-end encrypted libraries. Every key is made and used here, with WebCrypto;
-// the server (bff/src/fork/e2e) stores only what this file hands it, and can read none of it.
+// Fork-only: the browser side of end-to-end encrypted vaults, with WebCrypto. The server (bff/src/fork/e2e) stores
+// public keys and what this file seals, and can read none of it. The service worker (public/e2e-sw.js) repeats the
+// two operations it needs to open a page (openFrom, AES-GCM); keep the formats in step with it and with
+// bff/src/fork/e2e/crypto.ts.
 //
-//   vault passphrase ──PBKDF2──▶ KEK ──AES-GCM──▶ private key (ECDH P-256)          stored: e2e_key_wraps
-//   member public key ◀──ECIES── library key (random AES-256, versioned)            stored: e2e_library_members
-//   library key ──AES-GCM──▶ item key (random AES-256) ──AES-GCM──▶ chunks, metadata  stored: e2e_items + files
+//   account password ──PBKDF2──▶ KEK ──AES-GCM──▶ member private key (ECDH P-256)        e2e_key_wraps
+//   member public key ◀──ECIES── vault private key (ECDH P-256)                          e2e_vault_members
+//   vault public key ◀──ECIES── chapter key (the SERVER seals it, at download)           in each sealed page
+//   chapter key ──AES-GCM──▶ page                                                        the chapter file
 //
-// The private key is unlocked through an `Unlocker`. `passphraseUnlocker` is the only one today; a device-held key
-// (DAK: a non-extractable key in IndexedDB, or a passkey's PRF output) is a second Unlocker that wraps the SAME private
-// key, stored as another e2e_key_wraps row with its own `kind`. Nothing below the private key changes when one is added,
-// so moving to it later re-encrypts no library.
-//
-// Every ciphertext is bound to where it belongs with AES-GCM associated data (ids, key version, chunk index, last
-// chunk), so the server cannot swap one library's key, item or chunk for another's, reorder chunks or cut a file short
-// without decryption failing.
+// The member private key is unlocked through an `Unlocker`. `passwordUnlocker` derives the KEK from the account
+// password at sign-in; this device then keeps the key under a non-extractable device key (device.ts) -- the DAK. A
+// passkey or another device key would be one more Unlocker and one more e2e_key_wraps row for the SAME private key.
 
 /** Bytes WebCrypto accepts (an ArrayBuffer-backed view: TS 5.7+ distinguishes it from a SharedArrayBuffer one). */
 export type Bytes = Uint8Array<ArrayBuffer>;
@@ -47,14 +45,10 @@ export function unb64u(s: string): Bytes {
 export const newId = (): string => crypto.randomUUID();
 
 // ── Associated data: what each ciphertext is bound to ─────────────────────────────────────────────────────────
-const P = 'uchiyomi-e2e/v1';
 export const ad = {
-  identity: (userId: string) => utf8(`${P}/identity/${userId}`),
-  libraryKey: (libId: string, version: number, userId: string) => utf8(`${P}/library-key/${libId}/${version}/${userId}`),
-  libraryMeta: (libId: string, version: number) => utf8(`${P}/library-meta/${libId}/${version}`),
-  itemKey: (libId: string, itemId: string, version: number) => utf8(`${P}/item-key/${libId}/${itemId}/${version}`),
-  itemMeta: (itemId: string) => utf8(`${P}/item-meta/${itemId}`),
-  chunk: (itemId: string, n: number, last: boolean) => utf8(`${P}/chunk/${itemId}/${n}/${last ? 1 : 0}`),
+  identity: (userId: string) => utf8(`uchiyomi-e2e/v1/identity/${userId}`),
+  vaultKey: (libraryId: string, userId: string) => utf8(`uchiyomi-e2e/v2/vault-key/${libraryId}/${userId}`),
+  chapterKey: (libraryId: string) => utf8(`uchiyomi-e2e/v2/chapter-key/${libraryId}`),
 };
 
 // ── AES-256-GCM ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -80,18 +74,6 @@ export async function openString(key: CryptoKey, sealed: string, aad: Bytes): Pr
   if (v !== 'g1' || !iv || !ct) throw new Error('Unknown ciphertext format');
   return ungcm(key, unb64u(iv), unb64u(ct), aad);
 }
-export const sealJson = (key: CryptoKey, value: unknown, aad: Bytes) => sealString(key, utf8(JSON.stringify(value)), aad);
-export const openJson = async <T>(key: CryptoKey, sealed: string, aad: Bytes): Promise<T> => JSON.parse(dec.decode(await openString(key, sealed, aad))) as T;
-
-/** A binary chunk: iv (12 bytes) followed by ciphertext+tag. */
-export async function sealChunk(key: CryptoKey, plain: Bytes, aad: Bytes): Promise<Bytes> {
-  const { iv, ct } = await gcm(key, plain, aad);
-  const out = new Uint8Array(12 + ct.length);
-  out.set(iv, 0); out.set(ct, 12);
-  return out;
-}
-export const openChunk = (key: CryptoKey, sealed: Bytes, aad: Bytes) => ungcm(key, sealed.slice(0, 12), sealed.slice(12), aad);
-
 // ── The member's key pair ───────────────────────────────────────────────────────────────────────────────────────
 export const IDENTITY_ALG = 'ecdh-p256';
 const EC = { name: 'ECDH', namedCurve: 'P-256' } as const;
@@ -131,18 +113,18 @@ async function passphraseKek(passphrase: string, salt: Bytes, iterations: number
   return subtle().deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 
-/** KEK from a vault passphrase (PBKDF2-SHA256), wrapping the private key with AES-256-GCM. */
-export function passphraseUnlocker(passphrase: string, iterations = PBKDF2_ITERATIONS): Unlocker {
+/** KEK from the account password (PBKDF2-SHA256), wrapping the private key with AES-256-GCM. */
+export function passwordUnlocker(password: string, iterations = PBKDF2_ITERATIONS): Unlocker {
   return {
-    kind: 'passphrase',
+    kind: 'password',
     async wrap(pkcs8, aad) {
       const salt = random(16);
-      const kek = await passphraseKek(passphrase, salt, iterations);
+      const kek = await passphraseKek(password, salt, iterations);
       return { params: { kdf: 'pbkdf2-sha256', iterations, salt: b64u(salt) }, wrapped: await sealString(kek, pkcs8, aad) };
     },
     async unwrap(params, wrapped, aad) {
       if (params.kdf !== 'pbkdf2-sha256' || typeof params.salt !== 'string' || typeof params.iterations !== 'number') throw new Error('Unknown key wrap');
-      const kek = await passphraseKek(passphrase, unb64u(params.salt), params.iterations);
+      const kek = await passphraseKek(password, unb64u(params.salt), params.iterations);
       return openString(kek, wrapped, aad);
     },
   };
@@ -150,16 +132,17 @@ export function passphraseUnlocker(passphrase: string, iterations = PBKDF2_ITERA
 
 export interface StoredWrap { id: string; kind: string; label: string; params: Record<string, unknown>; wrapped: string }
 
-/** Try each stored wrap of the unlocker's kind; the first that opens wins. Throws when none does (a wrong passphrase). */
+/** Try each stored wrap of the unlocker's kind; the first that opens wins. Throws when none does (a wrong password). */
 export async function unlockWith(unlocker: Unlocker, wraps: StoredWrap[], userId: string): Promise<{ pkcs8: Bytes; wrapId: string }> {
   for (const w of wraps.filter((x) => x.kind === unlocker.kind)) {
     try { return { pkcs8: await unlocker.unwrap(w.params, w.wrapped, ad.identity(userId)), wrapId: w.id }; } catch { /* next */ }
   }
-  throw new Error('wrong_passphrase');
+  throw new Error('wrong_password');
 }
 
 // ── ECIES: a library key, sealed to one member's public key ─────────────────────────────────────────────────────
 export const WRAP_ALG = 'ecies-p256-hkdf-aesgcm';
+export const VAULT_ALG = 'ecdh-p256';
 
 async function ecdhAes(priv: CryptoKey, pub: CryptoKey, salt: Bytes, info: Bytes): Promise<CryptoKey> {
   const bits = await subtle().deriveBits({ name: 'ECDH', public: pub }, priv, 256);
@@ -185,15 +168,27 @@ export async function openFrom(priv: CryptoKey, sealed: string, aad: Bytes): Pro
   return ungcm(key, unb64u(iv), unb64u(ct), aad);
 }
 
-// ── Library and item keys ───────────────────────────────────────────────────────────────────────────────────────
-/** A symmetric key held unlocked in memory: its raw bytes (to wrap again for a new member) and the usable key. */
-export interface SymKey { raw: Bytes; key: CryptoKey }
-export async function newSymKey(): Promise<SymKey> {
-  const raw = random(32);
-  return { raw, key: await importAes(raw) };
-}
-export const symKeyOf = async (raw: Bytes): Promise<SymKey> => ({ raw, key: await importAes(raw) });
+// ── Sealed pages ───────────────────────────────────────────────────────────────────────────────────────────────
+// "UYE2" | u32 header length (big-endian) | header JSON {v, k, t, w, h} | iv (12) | AES-GCM ciphertext+tag, where the
+// associated data is everything before the iv. Written by the server (bff/src/fork/e2e/crypto.ts sealPage).
 
-/** Plaintext bytes per chunk: its ciphertext (+28) stays under a reverse proxy's usual 1 MiB request limit. */
-export const CHUNK_PLAIN = 960 * 1024;
-export const chunkCount = (size: number): number => Math.max(1, Math.ceil(size / CHUNK_PLAIN));
+export interface PageHeader { v: 2; k: string; t: string; w: number | null; h: number | null }
+
+export function isSealedPage(b: Uint8Array): boolean {
+  return b.length > 8 && b[0] === 0x55 && b[1] === 0x59 && b[2] === 0x45 && b[3] === 0x32;
+}
+
+/** Open a sealed page with the vault's private key. `chapterKeys` caches opened chapter keys by their sealed form. */
+export async function openPage(b: Bytes, vaultPriv: CryptoKey, libraryId: string, chapterKeys?: Map<string, CryptoKey>): Promise<{ type: string; bytes: Bytes }> {
+  if (!isSealedPage(b)) throw new Error('not a sealed page');
+  const n = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(4);
+  const header = JSON.parse(new TextDecoder().decode(b.subarray(8, 8 + n))) as PageHeader;
+  let ck = chapterKeys?.get(header.k);
+  if (!ck) {
+    ck = await importAes(await openFrom(vaultPriv, header.k, ad.chapterKey(libraryId)), ['decrypt']);
+    chapterKeys?.set(header.k, ck);
+  }
+  const aad = b.slice(0, 8 + n);
+  const iv = b.slice(8 + n, 20 + n);
+  return { type: header.t, bytes: await ungcm(ck, iv, b.slice(20 + n), aad) };
+}

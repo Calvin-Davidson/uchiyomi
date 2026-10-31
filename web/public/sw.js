@@ -29,6 +29,7 @@
 // v11 (v0.49.0): /api/admin/* is network-only now (the rule below). Every admin answer a v10 worker stored went
 //   into the capped API cache -- Health polls the repair's status every 2 s while a run goes -- and nothing reads
 //   those entries any more, so they would sit there, crowding out a reader's cached re-reads, until a bump.
+if (typeof importScripts === 'function') importScripts('/e2e-sw.js'); // fork-only: opens e2e vault pages (web/public/e2e-sw.js); first, so its fetch listener runs first
 const VERSION = 'v11';
 const SHELL = `yomi-shell-${VERSION}`;
 const STATIC = `yomi-static-${VERSION}`;

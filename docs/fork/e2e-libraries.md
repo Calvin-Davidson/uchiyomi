@@ -1,104 +1,96 @@
-# Private libraries (end-to-end encrypted) — fork only
+# Vault: an end-to-end encrypted library (fork only)
 
-Private libraries are encrypted on the reader's device before anything is uploaded. The server stores ciphertext and
-access rules, and holds no key that can read any of it. Server admins can't read them either. Open them at **`/vault`**.
+A vault is an ordinary library. You follow series in it, check them for new chapters, fetch chapters from your sources
+and read them in the normal reader. Two things are different:
 
-## Layout: kept apart from upstream
+- **Only its members see it.** Other accounts aren't told it exists, and that includes admins.
+- **Its chapter files are encrypted with the vault's public key.** The server can write new chapters into it, but it
+  can't read them back. Members' browsers decrypt the pages.
+
+## Using it
+
+1. Sign in with your password. That creates your key pair the first time and unlocks it on that device.
+2. Open **Vault** in the menu (under Library) and choose **Create vault**.
+3. Add series the usual way, then choose **Move to vault** on the series card's menu. Its existing chapters are
+   encrypted in the background, and every chapter fetched for it after that is encrypted before it's written to disk.
+4. **Vault** in the menu now opens the Library filtered to the vault. **Manage vault** (under it, or `/vault`) shows
+   members, how many chapter files are encrypted, and any that couldn't be.
+
+If you share a vault, the other person must have signed in once with their password since vaults were turned on. Compare
+the key fingerprint the share dialog shows with the one on their Vault page.
+
+## How it works
+
+```
+account password ──PBKDF2-SHA256 (600k)──▶ KEK                       (in the browser, at sign-in)
+KEK ──AES-GCM──▶ member private key (ECDH P-256)                      e2e_key_wraps, kind 'password'
+member public key ◀──ECIES── vault private key (ECDH P-256)           e2e_vault_members
+vault PUBLIC key ◀──ECIES── chapter key (random, per chapter file)    in each sealed page's header (the SERVER seals it)
+chapter key ──AES-256-GCM──▶ page                                     the CBZ, entry by entry
+```
+
+- **Sealing (server).** A sealed page is still a ZIP entry with the same name: `UYE2 | header | iv | ciphertext`. The
+  header holds the sealed chapter key, the image type and its width and height. So the scanner, page counts, ordering,
+  `ComicInfo.xml` (left in plaintext) and the reader's page layout all keep working. Only CBZ files can be sealed;
+  anything else in a vault is listed on the Vault page.
+- **Reading (browser).** The page route sends a sealed page as it's stored, along with the vault's private key sealed to
+  the requesting member. The service worker (`web/public/e2e-sw.js`) opens it with the key this device holds and hands
+  the page an ordinary image. The reader, thumbnails, page grid and offline downloads don't change. Resized page copies
+  aren't made for sealed pages, because resizing needs the plaintext image.
+- **Device key (the DAK).** After the password unlocks it, the member private key is kept in IndexedDB under a
+  non-extractable AES key that never leaves the device. Signing out removes it. A device that still holds it can re-wrap
+  the key when the password changes, including a password reset done elsewhere. Passkeys or other device keys would be
+  more `e2e_key_wraps` rows for the same private key (`Unlocker` in `web/fork/e2e/crypto.ts`), with no re-encryption.
+
+## What the server can and can't see
+
+- It **can't** read a sealed page, and it never has a private key.
+- It **does** see the series metadata (title, source, chapter list, covers from the source), because it needs them to
+  find and download new chapters. It also sees plaintext pages in memory while downloading them, and it sees plaintext
+  files that were on disk before a series was moved into the vault. Those files are rewritten sealed. The image cache's
+  copies of them (thumbnails, pages, 200/400/1200-wide copies) are deleted; *Fit pages to my screen* copies are left
+  for the cache to evict.
+- The password is sent to the server at sign-in, as it always has been, so a server modified to log passwords could
+  derive the KEK. A separate vault passphrase or a passkey would close that gap, and either fits as another `Unlocker`.
+
+## Limits
+
+- **There's no way back out.** The server can't decrypt, so a series can't be moved out of a vault. Remove it and add
+  it again instead. An admin's *Move library*, or deleting the vault's library in Admin → Libraries, leaves its files
+  encrypted in a normal library.
+- **Removing a member doesn't rotate the key.** Re-encrypting every chapter would have to happen in a browser. The
+  server stops serving the removed member immediately.
+- **No server-side image work on sealed pages:** automatic banners, page hashing and junk-page detection, translation,
+  spread joining and title extraction. OPDS and the Komga API hand external readers sealed bytes they can't open.
+- **Needs HTTPS (or localhost) and a service worker.** A private window without service workers shows "Vault locked"
+  placeholders.
+- **Accounts without a password** (SSO, passwordless profiles) can't unlock a vault.
+- **A lost password with no signed-in device left** makes the vault unreadable. Remove its series, delete the vault,
+  then reset your keys.
+- The vault UI is in English only.
+
+## Code layout (kept apart from upstream)
 
 | Where | What |
 | --- | --- |
-| `bff/src/fork/e2e/` | Schema (`schema.ts`), routes (`routes.ts`), chunk storage (`store.ts`), entry point (`index.ts`) |
-| `web/fork/e2e/` | WebCrypto (`crypto.ts`), API and session (`vault.ts`), CBZ reader (`zip.ts`), the page (`VaultPage.tsx`) |
-| `bff/test/e2eLibraries.int.test.ts`, `web/test/e2eVault.test.ts` | Tests |
+| `bff/src/fork/e2e/` | `schema.ts` (own tables, own migration), `vaults.ts` (members in memory), `crypto.ts` (seal), `seal.ts` (CBZ sealing, sweep, cache purge), `serve.ts` (sealed pages), `routes.ts` (`/api/e2e/*`), `index.ts` |
+| `web/fork/e2e/` | `crypto.ts`, `device.ts` (IndexedDB device key), `session.ts` (login and password hooks, vault calls), `hooks.tsx` (sidebar item, menu item, lock banner), `VaultPage.tsx` |
+| `web/public/e2e-sw.js` | decrypts sealed pages in the service worker |
+| `bff/test/e2eCrypto.test.ts`, `bff/test/e2eLibraries.int.test.ts`, `web/test/e2eVault.test.ts` | tests |
 
-Only three upstream files change, by one or two lines each, all marked `fork-only`:
+Upstream files change by one or two lines each, all marked `fork-only`:
 
-- `bff/src/server.ts`: imports `registerE2E` and calls it after the other route plugins.
-- `web/app/vault/page.tsx` (new): re-exports `web/fork/e2e/VaultPage`.
-- `web/app/globals.css`: `@source "../fork/";`, so Tailwind generates the classes the fork's UI uses.
+| File | Hook |
+| --- | --- |
+| `bff/src/server.ts` | `registerE2E(app)` |
+| `bff/src/lib/visibility.ts` | members-only vaults; a restricted member keeps their vaults |
+| `bff/src/lib/ownedCatalog.ts` | the same rule for the libraries list |
+| `bff/src/lib/downloader.ts` | seal before write (both writes) |
+| `bff/src/lib/library.ts` | sealed pages report their own size |
+| `bff/src/routes/images.ts` | serve sealed pages and covers untouched |
+| `web/public/sw.js` | `importScripts('/e2e-sw.js')` |
+| `web/components/Sidebar.tsx`, `SeriesMenu.tsx`, `AppShell.tsx` | Vault item, Move to vault, lock banner |
+| `web/lib/auth.tsx`, `web/components/ProfileAccount.tsx` | unlock at sign-in, forget at sign-out, re-wrap on password change |
+| `web/app/vault/page.tsx` (new), `web/app/globals.css` | the manage page; Tailwind scans `web/fork/` |
 
-The tables live outside `lib/migrate.ts` (`e2e_*`, created idempotently at every boot under their own advisory lock).
-The routes aren't in `bff/openapi.yaml` or `docs/api.md`, and the upstream route-table tests don't register them. The
-UI strings are plain English, outside the upstream i18n catalogue. No nav link is added; link to `/vault` from wherever
-suits the fork.
-
-## Configuration
-
-- `E2E_LIBRARIES=0` turns the feature off: no tables are created and no routes are registered.
-- `E2E_DIR` is where encrypted chunks are stored. The default is `<CONFIG_DIR>/e2e`, which the nightly config backup
-  includes; the data is ciphertext, so it's safe to back up. Point it at a bigger disk for large vaults.
-
-## Key hierarchy
-
-```
-vault passphrase ──PBKDF2-SHA256 (600k)──▶ KEK
-KEK ──AES-256-GCM──▶ private key (ECDH P-256)                         e2e_key_wraps   (one row per unlock method)
-member's public key ◀──ECIES (ECDH + HKDF-SHA256 + AES-GCM)── library key   e2e_library_members (one wrap per member)
-library key (AES-256, versioned) ──AES-GCM──▶ item key                e2e_items.wrapped_key
-item key ──AES-GCM──▶ metadata (name, type, size) and 960 KiB chunks  e2e_items.meta + files under E2E_DIR
-```
-
-- Every ciphertext carries AES-GCM associated data that binds it to its place: account, library, key version, item,
-  chunk index and whether it's the last chunk. The server can't swap keys or chunks between libraries or items,
-  reorder chunks, or truncate a file without decryption failing.
-- After unlock, the private key is imported as **non-extractable** and kept only in memory. A reload or **Lock**
-  forgets it.
-- Library and item ids are generated in the browser, so they can be bound into the associated data before the
-  server ever sees them.
-- Chunks are about 960 KiB of plaintext, so each upload stays under nginx's default 1 MiB request limit (the split
-  layout). Uploads are resumable chunk by chunk and committed at the end. Uploads that are never committed are
-  swept after 24 hours.
-
-## Sharing, roles and rotation
-
-- Roles: `owner` (members, rotation, deletion), `editor` (add, rename and remove files), `reader`.
-- To share, the owner looks up the member's public key by username. The UI shows its **fingerprint** so both people
-  can compare it out of band; the server is the key directory, so this check is what stops a substituted key.
-  The owner's browser then wraps the library key to that public key.
-- Removing a member stops the server serving them immediately. The owner's browser then **rotates** the library key:
-  a new version, wrapped to every remaining member, with every item key re-wrapped under it, all in one transaction.
-  Chunks are never re-encrypted.
-- A member can leave. The owner can't; they delete the library instead.
-
-## Lost passphrase
-
-Nothing can recover it. **Reset vault** (on the unlock screen or in Vault settings) deletes the key pair and every
-library the account owns, along with their files, and leaves the libraries others shared with it. The owners can then
-share those again.
-
-## Moving to device keys (DAK) later
-
-The private key is unwrapped through an `Unlocker` (`web/fork/e2e/crypto.ts`). Today's is `passphraseUnlocker`. A
-device-held key is another `Unlocker` with its own `kind`, for example a non-extractable AES key in IndexedDB or a
-passkey's WebAuthn PRF output. It wraps the **same** private key and is stored as one more `e2e_key_wraps` row
-(`POST /api/e2e/keys/wraps`). Nothing below the private key changes, so adopting it re-encrypts no library. The
-passphrase wrap can stay as a recovery path or be removed (the server never deletes the last wrap).
-
-If "DAK" means per-item data keys instead: items already have their own content key under the library key.
-
-## Known limits (v1)
-
-- The whole file is decrypted in memory before display; there's no streaming reader. Large PDFs and EPUBs are
-  saved decrypted rather than shown.
-- No thumbnails, reading progress or search inside private libraries: the server can't see the content.
-- The vault page isn't translated.
-- PBKDF2 is used because WebCrypto has it natively. A memory-hard KDF (Argon2id via WASM) can be added as another
-  `kdf` value in a wrap's `params` without touching existing wraps.
-
-## API (all signed in, under `/api/e2e`)
-
-```
-GET    /api/e2e/keys                          PUT    /api/e2e/keys
-DELETE /api/e2e/keys                          POST   /api/e2e/keys/wraps
-PUT    /api/e2e/keys/wraps/:id                DELETE /api/e2e/keys/wraps/:id
-GET    /api/e2e/users/:username/key
-GET    /api/e2e/libraries                     POST   /api/e2e/libraries
-GET    /api/e2e/libraries/:id                 PATCH  /api/e2e/libraries/:id
-DELETE /api/e2e/libraries/:id                 POST   /api/e2e/libraries/:id/rotate
-GET    /api/e2e/libraries/:id/members         PUT    /api/e2e/libraries/:id/members/:userId
-DELETE /api/e2e/libraries/:id/members/:userId
-GET    /api/e2e/libraries/:id/items           POST   /api/e2e/libraries/:id/items
-PUT    /api/e2e/items/:id/chunks/:n           GET    /api/e2e/items/:id/chunks/:n
-POST   /api/e2e/items/:id/commit              PATCH  /api/e2e/items/:id
-DELETE /api/e2e/items/:id
-```
+`E2E_LIBRARIES=0` turns it off: no tables, no routes, and every hook does nothing.

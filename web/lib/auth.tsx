@@ -12,6 +12,7 @@ import { setAdultShown } from './adult';
 import { isDesktop, serverReachableHint, untilReachable } from './desktop';
 import { t as tr } from './i18n';
 import type { AvatarFrame } from './badges';
+import { vaultAfterLogin, vaultForget } from '@/fork/e2e/session'; // fork-only: e2e vault
 
 /** `frame` since v0.89.0 (#267): the frame one of the account's badges unlocked (lib/badges.ts). */
 export interface Avatar { emoji?: string; color?: string; frame?: AvatarFrame }
@@ -237,6 +238,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // That store has to end with the session, or a shared machine hands the next person a live token.
     clearShownOnce();
     void tellWorkerUser(null);
+    await vaultForget(); // fork-only: this device forgets its e2e vault keys
     await forgetAccountData();
   };
 
@@ -322,6 +324,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAccessToken(res.accessToken);
       // After the purge, never before: the identity write must not be the thing the purge sweeps away.
       adoptAuthed(res.user, res.refreshExpiresAt);
+      vaultAfterLogin(res.user.id, password); // fork-only: the password unlocks the e2e vault on this device
       return { ok: true };
     } catch (e: any) {
       let body: any = {};

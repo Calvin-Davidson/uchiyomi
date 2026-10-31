@@ -12,6 +12,7 @@
 import { q, one } from './db';
 import { noticeBook } from './noticeChapters';
 import { genresByIdOf } from './autoDetailsSql';
+import { vaultClause, withVaults } from '../fork/e2e/vaults'; // fork-only: e2e vaults
 
 export interface ViewCtx {
   /** null only for background work that legitimately sees everything: the scanner, the hero pre-warmer. */
@@ -76,7 +77,8 @@ export class Params {
 /** The predicate. `alias` is the lib_series alias in the query being built. */
 export function visible(alias: string, ctx: ViewCtx, p: Params): string {
   const parts = [`${alias}.deleted_at IS NULL`, `${alias}.merged_into IS NULL`];
-  if (ctx.libraryIds) parts.push(`${alias}.library_id = ANY(${p.add([...ctx.libraryIds])})`);
+  if (ctx.libraryIds) parts.push(`${alias}.library_id = ANY(${p.add([...withVaults(ctx.libraryIds, ctx.userId)!])})`); // fork-only: + own vaults
+  const vault = vaultClause(alias, ctx.userId, (v) => p.add(v)); if (vault) parts.push(vault); // fork-only: e2e vaults are members-only
   if (ctx.maxAgeRating !== null) {
     // The admin's override wins over what the scan read, like every other piece of series metadata. This is
     // a correlated subquery rather than a join because `visible()` is applied wherever `lib_series` appears

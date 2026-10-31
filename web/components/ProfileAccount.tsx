@@ -13,6 +13,7 @@ import { IcCheck, IcGrid, IcLogOut, IcUser } from '@/components/icons';
 import { t as tr } from '@/lib/i18n';
 import { SETTINGS_GRID, Section, Row, useAutosave } from '@/components/settings';
 import { linkResultText, ssoOnly, useAuthConfig, type AuthConfig } from '@/lib/authConfig';
+import { vaultPasswordChanged } from '@/fork/e2e/session'; // fork-only: e2e vault
 
 /**
  * The profile's Account tab: Signed in as · Two-factor authentication · Active sessions · Sign out.
@@ -102,7 +103,7 @@ function IdentitySection({ config, ready }: { config: AuthConfig | undefined; re
     e.preventDefault();
     if (!valid) return;
     const ok = await run(async () => {
-      try { await api('/auth/password', { json: { current: cur, next } }); }
+      try { await api('/auth/password', { json: { current: cur, next } }); await vaultPasswordChanged(user?.id, cur, next); /* fork-only: re-wrap the vault key */ }
       catch (err) { explain(err, tr('Could not change password')); }
       qc.invalidateQueries({ queryKey: ['sessions'] });
     });

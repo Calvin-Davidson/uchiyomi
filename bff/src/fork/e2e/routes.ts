@@ -1,95 +1,101 @@
-// Fork-only: end-to-end encrypted ("private") libraries. HTTP routes, all under /api/e2e.
+// Fork-only: end-to-end encrypted vaults. HTTP routes, all under /api/e2e.
 //
-// The server is a dumb, access-controlled store of ciphertext: it checks WHO may read or write a library and keeps
-// the bytes, but every key, name and page is encrypted in the browser (web/fork/e2e/crypto.ts) before it gets here.
-// Strings the client hands over (`meta`, `wrapped`, `wrappedKey`, `publicKey`) are opaque to this file; it only
-// bounds their size and alphabet. See schema.ts for what each table holds and docs/fork/e2e-libraries.md.
+// A vault is an ordinary library (a `libraries` row): its series are followed, checked for new chapters, downloaded,
+// listed and read like any other. What differs is that every chapter file in it is sealed to the vault's public key
+// (seal.ts), only its members see it (vaults.ts, through lib/visibility.ts), and their browsers decrypt the pages
+// (web/public/e2e-sw.js). The server holds public keys and sealed private keys only; it can never read a page.
 //
-// Roles, per library: `owner` (one; manages members, rotates the key, deletes the library), `editor` (adds, renames
-// and removes items) and `reader`. Being an admin of the server grants nothing here: an admin holds no key.
+// Keys: each account has a key pair whose private half is wrapped in the browser by a KEK derived from the account
+// password (`kind = 'password'`). Each vault has a key pair whose private half is sealed to each member's public key.
+//
+// Roles, per vault: `owner` (one; members, rename, delete), `editor` (moves series in), `reader`. Being a server admin
+// grants nothing here.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
+import { verify } from '@node-rs/argon2';
 import { z } from 'zod';
 import { q, one, tx } from '../../lib/db';
-import { authenticate, userIdOf } from '../../lib/auth';
+import { authenticate, userIdOf, roleOf } from '../../lib/auth';
 import { logAudit } from '../../lib/audit';
-import * as store from './store';
+import { seriesVisible, viewCtxFor } from '../../lib/visibility';
+import { vaultPublicKey } from './crypto';
+import { loadVaults, vaultOf, vaultsOf } from './vaults';
+import { sealStatus, sweepVaults } from './seal';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const uuid = z.string().regex(UUID_RE).transform((s) => s.toLowerCase());
+const vaultId = z.string().regex(/^vault_[0-9a-f]{16}$/);
 /** An opaque client-made string: base64url segments joined by `.` or `:`, bounded. */
 const opaque = (max: number) => z.string().min(1).max(max).regex(/^[A-Za-z0-9_\-.:]+$/);
-/** An algorithm or unlock-method name: `ecdh-p256`, `ecies-p256-hkdf-aesgcm`, `passphrase`, later `device`. */
+/** An algorithm or unlock-method name: `ecdh-p256`, `ecies-p256-hkdf-aesgcm`, `password`, later `device`. */
 const name = z.string().regex(/^[a-z0-9][a-z0-9.\-]{0,39}$/);
 const params = z.record(z.string(), z.unknown()).refine((p) => JSON.stringify(p).length <= 4096, 'params too large');
 const role = z.enum(['editor', 'reader']);
+const title = z.string().trim().min(1).max(80);
 
-/** Ciphertext bytes in one uploaded chunk: the client encrypts 960 KiB pieces, which stay under nginx's 1 MiB default. */
-export const CHUNK_MAX = 1024 * 1024;
-/** Chunks in one item: ~3.75 GiB at the client's chunk size. */
-export const MAX_CHUNKS = 4096;
-/** An item that was never committed is dropped after this. */
-const PENDING_TTL_HOURS = 24;
+/** Vaults one account may own. */
+const MAX_OWNED = 5;
 
 const NOT_FOUND = { error: 'not_found' } as const;
 const FORBIDDEN = { error: 'forbidden' } as const;
-const bad = (reply: FastifyReply, detail?: string) => reply.code(400).send({ error: 'bad_request', ...(detail ? { detail } : {}) });
+const bad = (reply: FastifyReply) => reply.code(400).send({ error: 'bad_request' });
 
 type Role = 'owner' | 'editor' | 'reader';
 const RANK: Record<Role, number> = { reader: 0, editor: 1, owner: 2 };
 
-interface Membership { role: Role; key_version: number; library_key_version: number; owner_id: string }
-
-async function membership(libraryId: string, userId: string): Promise<Membership | null> {
-  return one<Membership>(
-    `SELECT m.role, m.key_version, l.key_version AS library_key_version, l.owner_id
-       FROM e2e_library_members m JOIN e2e_libraries l ON l.id = m.library_id
-      WHERE m.library_id = $1 AND m.user_id = $2`,
-    [libraryId, userId],
-  );
-}
-
-interface ItemRow { id: string; library_id: string; key_version: number; wrapped_key: string; meta: string; chunks: number; size: number; state: 'pending' | 'ready'; created_by: string | null; created_at: Date; updated_at: Date }
-const itemOut = (r: ItemRow) => ({
-  id: r.id, libraryId: r.library_id, keyVersion: r.key_version, wrappedKey: r.wrapped_key, meta: r.meta,
-  chunks: r.chunks, size: Number(r.size), state: r.state, createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at,
-});
-
-/** Drop items nobody committed (an upload that was abandoned), rows and chunks both. */
-export async function sweepPendingItems(): Promise<number> {
-  const gone = await q<{ id: string; library_id: string }>(
-    `DELETE FROM e2e_items WHERE state = 'pending' AND updated_at < now() - make_interval(hours => $1) RETURNING id, library_id`,
-    [PENDING_TTL_HOURS],
-  );
-  for (const g of gone) await store.removeItem(g.library_id, g.id).catch(() => {});
-  return gone.length;
-}
-
 export default async function e2eRoutes(app: FastifyInstance) {
+  // server.ts registers the limiter at the root; a test that mounts this plugin bare gets it here.
+  if (!app.hasDecorator('createRateLimit')) await app.register(rateLimit, { global: false });
   app.addHook('preHandler', authenticate);
-  // Encrypted chunks arrive raw. Scoped to this plugin, so no other route starts accepting octet-stream bodies.
-  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer', bodyLimit: CHUNK_MAX }, (_req, body, done) => done(null, body));
-
   const uid = (req: FastifyRequest) => userIdOf(req);
 
-  /** The caller's role in a library, or a 404 already sent (a library you are not in does not exist to you). */
-  async function need(req: FastifyRequest, reply: FastifyReply, libraryId: string, min: Role): Promise<Membership | null> {
-    const m = await membership(libraryId, uid(req));
-    if (!m) { reply.code(404).send(NOT_FOUND); return null; }
-    if (RANK[m.role] < RANK[min]) { reply.code(403).send(FORBIDDEN); return null; }
-    return m;
+  /** The caller's role in a vault, or a 404 already sent (a vault you are not in does not exist to you). */
+  async function need(req: FastifyRequest, reply: FastifyReply, id: string, min: Role): Promise<Role | null> {
+    const r = vaultOf(id)?.members.get(uid(req));
+    if (!r) { reply.code(404).send(NOT_FOUND); return null; }
+    if (RANK[r] < RANK[min]) { reply.code(403).send(FORBIDDEN); return null; }
+    return r;
   }
 
-  /** An item and the caller's role in its library, under the same 404 rule. */
-  async function needItem(req: FastifyRequest, reply: FastifyReply, itemId: string, min: Role): Promise<{ item: ItemRow; m: Membership } | null> {
-    const item = await one<ItemRow>('SELECT * FROM e2e_items WHERE id = $1', [itemId]);
-    if (!item) { reply.code(404).send(NOT_FOUND); return null; }
-    const m = await need(req, reply, item.library_id, min);
-    return m ? { item, m } : null;
-  }
+  // ── Status: what the web app reads at start ─────────────────────────────────────────────────────────────
+
+  /** Whether this account has keys, and the vaults it is in (with its sealed copy of each vault's private key). */
+  app.get('/api/e2e/status', async (req) => {
+    const me = uid(req);
+    const [k, user] = await Promise.all([
+      one<{ public_key: string }>('SELECT public_key FROM e2e_user_keys WHERE user_id = $1', [me]),
+      one<{ has_password: boolean }>(`SELECT (auth_kind = 'password' AND password_login) AS has_password FROM users WHERE id = $1`, [me]),
+    ]);
+    const vaults = await q<{ library_id: string; name: string; role: Role; owner_id: string; public_key: string; wrap_alg: string; wrapped_key: string }>(
+      `SELECT v.library_id, l.name, m.role, v.owner_id, v.public_key, m.wrap_alg, m.wrapped_key
+         FROM e2e_vault_members m JOIN e2e_vaults v ON v.library_id = m.library_id JOIN libraries l ON l.id = v.library_id
+        WHERE m.user_id = $1 ORDER BY v.created_at`, [me]);
+    return {
+      enabled: true,
+      hasKeys: !!k,
+      publicKey: k?.public_key ?? null,
+      // A vault is unlocked with the account password: an account signing in by SSO or a passwordless profile has none.
+      passwordAccount: !!user?.has_password,
+      vaults: vaults.map((v) => ({ id: v.library_id, name: v.name, role: v.role, ownerId: v.owner_id, publicKey: v.public_key, wrapAlg: v.wrap_alg, wrappedKey: v.wrapped_key })),
+    };
+  });
+
+  /**
+   * Is this the account's password? For making the first key pair while already signed in: the browser derives the KEK
+   * from what was typed, and a typo there would lock the vault behind a password nobody knows. Rate-limited per account.
+   */
+  app.post('/api/e2e/verify-password', {
+    config: { rateLimit: { max: 10, timeWindow: '10 minutes', hook: 'preHandler', keyGenerator: (req: FastifyRequest) => `e2e-pw:${userIdOf(req)}` } },
+  }, async (req, reply) => {
+    const b = z.object({ password: z.string().min(1).max(1024) }).safeParse(req.body ?? {});
+    if (!b.success) return bad(reply);
+    const u = await one<{ password_hash: string }>('SELECT password_hash FROM users WHERE id = $1', [uid(req)]);
+    const ok = !!u?.password_hash && (await verify(u.password_hash, b.data.password).catch(() => false));
+    return ok ? { ok: true } : reply.code(401).send({ error: 'wrong_password' });
+  });
 
   // ── The caller's own key pair ────────────────────────────────────────────────────────────────────────────
 
-  /** The public key and every wrapped copy of the private key; the browser unwraps one of them locally. */
   app.get('/api/e2e/keys', async (req, reply) => {
     const k = await one<{ alg: string; public_key: string; created_at: Date }>('SELECT alg, public_key, created_at FROM e2e_user_keys WHERE user_id = $1', [uid(req)]);
     if (!k) return reply.code(404).send({ error: 'no_keys' });
@@ -107,6 +113,7 @@ export default async function e2eRoutes(app: FastifyInstance) {
   app.put('/api/e2e/keys', async (req, reply) => {
     const b = z.object({ alg: name, publicKey: opaque(2048), wrap: wrapBody }).safeParse(req.body ?? {});
     if (!b.success) return bad(reply);
+    try { vaultPublicKey(b.data.publicKey); } catch { return bad(reply); }
     const me = uid(req);
     const made = await tx(async (qq) => {
       const [k] = await qq('INSERT INTO e2e_user_keys (user_id, alg, public_key) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO NOTHING RETURNING user_id', [me, b.data.alg, b.data.publicKey]);
@@ -121,23 +128,22 @@ export default async function e2eRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Forget the key pair -- the only way out of a lost passphrase. Every library the caller owns is deleted with
-   * its files (nobody could ever be given its key again), and they leave every library they were a member of.
+   * Forget the key pair -- the way out of a forgotten password. Refused while the account owns a vault (its chapters
+   * would be unreadable for good: empty and delete it first); every vault it was only a member of, it leaves.
    */
   app.delete('/api/e2e/keys', async (req, reply) => {
     const me = uid(req);
-    const owned = await tx(async (qq) => {
-      const libs = await qq<{ id: string }>('DELETE FROM e2e_libraries WHERE owner_id = $1 RETURNING id', [me]);
-      await qq('DELETE FROM e2e_library_members WHERE user_id = $1', [me]);
+    if (await one('SELECT 1 FROM e2e_vaults WHERE owner_id = $1', [me])) return reply.code(409).send({ error: 'owns_vaults' });
+    await tx(async (qq) => {
+      await qq('DELETE FROM e2e_vault_members WHERE user_id = $1', [me]);
       await qq('DELETE FROM e2e_user_keys WHERE user_id = $1', [me]);
-      return libs;
     });
-    for (const l of owned) await store.removeLibrary(l.id).catch(() => {});
-    void logAudit('e2e.keys.reset', { userId: me, req, detail: { librariesDeleted: owned.length } });
+    await loadVaults();
+    void logAudit('e2e.keys.reset', { userId: me, req });
     return reply.code(204).send();
   });
 
-  /** Another way to unlock the same private key (a second passphrase, a recovery code, later a device key). */
+  /** Another way to unlock the same private key (later: a device key). */
   app.post('/api/e2e/keys/wraps', async (req, reply) => {
     const b = wrapBody.safeParse(req.body ?? {});
     if (!b.success) return bad(reply);
@@ -151,7 +157,7 @@ export default async function e2eRoutes(app: FastifyInstance) {
     return { id: row.id };
   });
 
-  /** Re-wrap: a changed passphrase replaces the wrap it unlocked with. */
+  /** Re-wrap: a changed password replaces the wrap it unlocked with. */
   app.put('/api/e2e/keys/wraps/:id', async (req, reply) => {
     const id = uuid.safeParse((req.params as { id: string }).id);
     const b = wrapBody.partial({ kind: true, label: true }).safeParse(req.body ?? {});
@@ -164,7 +170,7 @@ export default async function e2eRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  /** Remove a way to unlock, never the last one (that would lock the caller out of every library). */
+  /** Remove a way to unlock, never the last one. */
   app.delete('/api/e2e/keys/wraps/:id', async (req, reply) => {
     const id = uuid.safeParse((req.params as { id: string }).id);
     if (!id.success) return bad(reply);
@@ -175,7 +181,7 @@ export default async function e2eRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  /** Someone's public key, by username, to share a library with them. Only accounts that set up a vault have one. */
+  /** Someone's public key, by username, to share a vault with them. Only accounts with keys have one. */
   app.get('/api/e2e/users/:username/key', async (req, reply) => {
     const username = String((req.params as { username: string }).username || '').slice(0, 120);
     const r = await one<{ id: string; username: string; display_name: string; alg: string; public_key: string }>(
@@ -186,266 +192,158 @@ export default async function e2eRoutes(app: FastifyInstance) {
     return { userId: r.id, username: r.username, displayName: r.display_name, alg: r.alg, publicKey: r.public_key };
   });
 
-  // ── Libraries ────────────────────────────────────────────────────────────────────────────────────────────
-
-  const LIB_SELECT = `
-    SELECT l.id, l.owner_id, l.key_version, l.meta, l.created_at, l.updated_at,
-           m.role, m.key_version AS member_key_version, m.wrap_alg, m.wrapped_key,
-           (SELECT count(*) FROM e2e_items i WHERE i.library_id = l.id AND i.state = 'ready') AS items
-      FROM e2e_library_members m JOIN e2e_libraries l ON l.id = m.library_id`;
-  const libOut = (r: any) => ({
-    id: r.id, ownerId: r.owner_id, keyVersion: r.key_version, meta: r.meta, role: r.role,
-    memberKeyVersion: r.member_key_version, wrapAlg: r.wrap_alg, wrappedKey: r.wrapped_key,
-    items: Number(r.items), createdAt: r.created_at, updatedAt: r.updated_at,
-  });
-
-  app.get('/api/e2e/libraries', async (req) => {
-    const rows = await q(`${LIB_SELECT} WHERE m.user_id = $1 ORDER BY l.created_at`, [uid(req)]);
-    return rows.map(libOut);
-  });
+  // ── Vaults ───────────────────────────────────────────────────────────────────────────────────────────────
 
   /**
-   * A new library. The id is made by the browser: it is bound into the encryption of the library key and the
-   * metadata (as associated data), so the server cannot hand one library's ciphertext out as another's.
+   * A new vault: a library row (no folder of its own -- series are moved in, and stay pinned there), its public key,
+   * and the owner's sealed copy of its private key. The key pair is made in the browser.
    */
-  app.post('/api/e2e/libraries', async (req, reply) => {
-    const b = z.object({ id: uuid, meta: opaque(16_384), wrapAlg: name, wrappedKey: opaque(2048) }).safeParse(req.body ?? {});
+  app.post('/api/e2e/vaults', async (req, reply) => {
+    const b = z.object({ id: vaultId, name: title, alg: name, publicKey: opaque(2048), wrapAlg: name, wrappedKey: opaque(4096) }).safeParse(req.body ?? {});
     if (!b.success) return bad(reply);
+    try { vaultPublicKey(b.data.publicKey); } catch { return bad(reply); }
     const me = uid(req);
-    const ok = await tx(async (qq) => {
-      const [hasKeys] = await qq('SELECT 1 FROM e2e_user_keys WHERE user_id = $1', [me]);
-      if (!hasKeys) return 'no_keys' as const;
-      const [lib] = await qq('INSERT INTO e2e_libraries (id, owner_id, meta) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING RETURNING id', [b.data.id, me, b.data.meta]);
-      if (!lib) return 'exists' as const;
-      await qq(`INSERT INTO e2e_library_members (library_id, user_id, role, key_version, wrap_alg, wrapped_key, added_by)
-                VALUES ($1, $2, 'owner', 1, $3, $4, $2)`, [b.data.id, me, b.data.wrapAlg, b.data.wrappedKey]);
-      return 'ok' as const;
+    // The browser picks the id: its sealed copy of the private key is bound to it (associated data).
+    const id = b.data.id;
+    const out = await tx(async (qq) => {
+      if (!(await qq('SELECT 1 FROM e2e_user_keys WHERE user_id = $1', [me])).length) return 'no_keys';
+      const [{ n }] = await qq<{ n: number }>('SELECT count(*)::int AS n FROM e2e_vaults WHERE owner_id = $1', [me]);
+      if (n >= MAX_OWNED) return 'too_many';
+      if ((await qq('SELECT 1 FROM libraries WHERE id = $1', [id])).length) return 'exists';
+      // A path no folder has, so the folder rule (lib/library.ts libraryIdFor) never files anything here by itself.
+      await qq(`INSERT INTO libraries (id, name, path, sort_order) VALUES ($1, $2, $3, 1000)`, [id, b.data.name, `.uchiyomi-vault/${id}`]);
+      await qq('INSERT INTO e2e_vaults (library_id, owner_id, alg, public_key) VALUES ($1, $2, $3, $4)', [id, me, b.data.alg, b.data.publicKey]);
+      await qq(`INSERT INTO e2e_vault_members (library_id, user_id, role, wrap_alg, wrapped_key, added_by) VALUES ($1, $2, 'owner', $3, $4, $2)`,
+        [id, me, b.data.wrapAlg, b.data.wrappedKey]);
+      return 'ok';
     });
-    if (ok !== 'ok') return reply.code(409).send({ error: ok });
-    void logAudit('e2e.library.create', { userId: me, req, detail: { library: b.data.id } });
-    const [row] = await q(`${LIB_SELECT} WHERE m.user_id = $1 AND l.id = $2`, [me, b.data.id]);
-    return libOut(row);
+    if (out !== 'ok') return reply.code(409).send({ error: out });
+    await loadVaults();
+    void logAudit('e2e.vault.create', { userId: me, req, detail: { library: id } });
+    return { id };
   });
 
-  app.get('/api/e2e/libraries/:id', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
+  /** One vault: who is in it, and how far its chapters are sealed. */
+  app.get('/api/e2e/vaults/:id', async (req, reply) => {
+    const id = vaultId.safeParse((req.params as { id: string }).id);
     if (!id.success) return reply.code(404).send(NOT_FOUND);
-    const [row] = await q(`${LIB_SELECT} WHERE m.user_id = $1 AND l.id = $2`, [uid(req), id.data]);
-    if (!row) return reply.code(404).send(NOT_FOUND);
-    return libOut(row);
+    const myRole = await need(req, reply, id.data, 'reader');
+    if (!myRole) return;
+    const [lib, members, seal, series] = await Promise.all([
+      one<{ name: string }>('SELECT name FROM libraries WHERE id = $1', [id.data]),
+      q<{ user_id: string; username: string | null; display_name: string; role: Role; public_key: string | null }>(
+        `SELECT m.user_id, u.username, u.display_name, m.role, k.public_key
+           FROM e2e_vault_members m JOIN users u ON u.id = m.user_id LEFT JOIN e2e_user_keys k ON k.user_id = m.user_id
+          WHERE m.library_id = $1 ORDER BY (m.role = 'owner') DESC, m.created_at`, [id.data]),
+      sealStatus(id.data),
+      one<{ n: number }>('SELECT count(*)::int AS n FROM lib_series WHERE library_id = $1 AND deleted_at IS NULL', [id.data]),
+    ]);
+    return {
+      id: id.data, name: lib?.name ?? '', role: myRole, series: series?.n ?? 0, seal,
+      members: members.map((m) => ({ userId: m.user_id, username: m.username, displayName: m.display_name, role: m.role, publicKey: m.public_key })),
+    };
   });
 
-  /** New encrypted metadata (a rename). Editors and the owner. */
-  app.patch('/api/e2e/libraries/:id', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    const b = z.object({ meta: opaque(16_384) }).safeParse(req.body ?? {});
+  app.patch('/api/e2e/vaults/:id', async (req, reply) => {
+    const id = vaultId.safeParse((req.params as { id: string }).id);
+    const b = z.object({ name: title }).safeParse(req.body ?? {});
     if (!id.success) return reply.code(404).send(NOT_FOUND);
     if (!b.success) return bad(reply);
-    if (!(await need(req, reply, id.data, 'editor'))) return;
-    await q('UPDATE e2e_libraries SET meta = $2, updated_at = now() WHERE id = $1', [id.data, b.data.meta]);
+    if (!(await need(req, reply, id.data, 'owner'))) return;
+    await q('UPDATE libraries SET name = $2 WHERE id = $1', [id.data, b.data.name]);
     return { ok: true };
   });
 
-  app.delete('/api/e2e/libraries/:id', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
+  /** Delete an EMPTY vault. Its series are removed from the library first, the usual way; nothing here deletes files. */
+  app.delete('/api/e2e/vaults/:id', async (req, reply) => {
+    const id = vaultId.safeParse((req.params as { id: string }).id);
     if (!id.success) return reply.code(404).send(NOT_FOUND);
     if (!(await need(req, reply, id.data, 'owner'))) return;
-    await q('DELETE FROM e2e_libraries WHERE id = $1', [id.data]);
-    await store.removeLibrary(id.data).catch(() => {});
-    void logAudit('e2e.library.delete', { userId: uid(req), req, detail: { library: id.data } });
+    if (await one('SELECT 1 FROM lib_series WHERE library_id = $1 AND deleted_at IS NULL', [id.data])) return reply.code(409).send({ error: 'not_empty' });
+    await tx(async (qq) => {
+      // Series removed earlier keep their row (a removed series can be put back); they go back to the main library.
+      await qq(`UPDATE lib_series SET library_id = 'lib', library_pinned = false WHERE library_id = $1`, [id.data]);
+      await qq('DELETE FROM user_libraries WHERE library_id = $1', [id.data]);
+      await qq('DELETE FROM libraries WHERE id = $1', [id.data]);
+    });
+    await loadVaults();
+    void logAudit('e2e.vault.delete', { userId: uid(req), req, detail: { library: id.data } });
     return reply.code(204).send();
+  });
+
+  /**
+   * Move series into a vault. Each must be one the caller can see, and not already in a vault. They are pinned there
+   * (the folder rule never takes them back out), their chapter files are sealed in the background, and every chapter
+   * fetched for them from now on is sealed before it is written. There is no way back out: the server cannot decrypt.
+   */
+  app.post('/api/e2e/vaults/:id/series', async (req, reply) => {
+    const id = vaultId.safeParse((req.params as { id: string }).id);
+    const b = z.object({ seriesIds: z.array(z.string().min(1).max(64)).min(1).max(500) }).safeParse(req.body ?? {});
+    if (!id.success) return reply.code(404).send(NOT_FOUND);
+    if (!b.success) return bad(reply);
+    if (!(await need(req, reply, id.data, 'editor'))) return;
+    const ctx = await viewCtxFor(uid(req), roleOf(req));
+    const moved: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+    for (const sid of b.data.seriesIds) {
+      const row = await one<{ library_id: string }>('SELECT library_id FROM lib_series WHERE id = $1 AND deleted_at IS NULL', [sid]);
+      if (!row || !(await seriesVisible(sid, ctx))) { skipped.push({ id: sid, reason: 'not_found' }); continue; }
+      if (vaultOf(row.library_id)) { skipped.push({ id: sid, reason: row.library_id === id.data ? 'already_here' : 'in_another_vault' }); continue; }
+      moved.push(sid);
+    }
+    if (moved.length) await q('UPDATE lib_series SET library_id = $2, library_pinned = true WHERE id = ANY($1)', [moved, id.data]);
+    void logAudit('e2e.vault.move', { userId: uid(req), req, detail: { library: id.data, n: moved.length } });
+    void sweepVaults(id.data).catch((e) => req.log.warn(`e2e: sealing failed: ${(e as Error)?.message || e}`));
+    return { applied: moved.length, skipped };
+  });
+
+  /** Seal now (what the vault page's button and the move above start); answers when the sweep is done. */
+  app.post('/api/e2e/vaults/:id/seal', async (req, reply) => {
+    const id = vaultId.safeParse((req.params as { id: string }).id);
+    if (!id.success) return reply.code(404).send(NOT_FOUND);
+    if (!(await need(req, reply, id.data, 'editor'))) return;
+    const r = await sweepVaults(id.data);
+    return { ...r, status: await sealStatus(id.data) };
   });
 
   // ── Members ──────────────────────────────────────────────────────────────────────────────────────────────
 
-  /** Who is in the library, with each one's public key: the owner needs them to re-wrap at a key rotation. */
-  app.get('/api/e2e/libraries/:id/members', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    if (!(await need(req, reply, id.data, 'reader'))) return;
-    const rows = await q<{ user_id: string; username: string | null; display_name: string; role: Role; key_version: number; alg: string | null; public_key: string | null; created_at: Date }>(
-      `SELECT m.user_id, u.username, u.display_name, m.role, m.key_version, k.alg, k.public_key, m.created_at
-         FROM e2e_library_members m JOIN users u ON u.id = m.user_id LEFT JOIN e2e_user_keys k ON k.user_id = m.user_id
-        WHERE m.library_id = $1 ORDER BY (m.role = 'owner') DESC, m.created_at`, [id.data]);
-    return rows.map((r) => ({ userId: r.user_id, username: r.username, displayName: r.display_name, role: r.role, keyVersion: r.key_version, alg: r.alg, publicKey: r.public_key, addedAt: r.created_at }));
-  });
-
-  /**
-   * Add a member, or change their role. The owner's browser unwrapped the library key and wrapped it again to the
-   * member's public key; it must be the CURRENT key version, or the member would be handed a key that opens nothing new.
-   */
-  app.put('/api/e2e/libraries/:id/members/:userId', async (req, reply) => {
-    const p = z.object({ id: uuid, userId: uuid }).safeParse(req.params);
-    const b = z.object({ role, keyVersion: z.number().int().min(1), wrapAlg: name, wrappedKey: opaque(2048) }).safeParse(req.body ?? {});
+  /** Add a member, or change their role: the owner's browser sealed the vault's private key to the member's public key. */
+  app.put('/api/e2e/vaults/:id/members/:userId', async (req, reply) => {
+    const p = z.object({ id: vaultId, userId: uuid }).safeParse(req.params);
+    const b = z.object({ role, wrapAlg: name, wrappedKey: opaque(4096) }).safeParse(req.body ?? {});
     if (!p.success) return reply.code(404).send(NOT_FOUND);
     if (!b.success) return bad(reply);
-    const m = await need(req, reply, p.data.id, 'owner');
-    if (!m) return;
-    if (p.data.userId === m.owner_id) return reply.code(409).send({ error: 'is_owner' });
-    if (b.data.keyVersion !== m.library_key_version) return reply.code(409).send({ error: 'stale_key', keyVersion: m.library_key_version });
+    if (!(await need(req, reply, p.data.id, 'owner'))) return;
+    if (p.data.userId === vaultOf(p.data.id)?.ownerId) return reply.code(409).send({ error: 'is_owner' });
     const target = await one('SELECT 1 FROM e2e_user_keys k JOIN users u ON u.id = k.user_id WHERE k.user_id = $1 AND NOT u.disabled', [p.data.userId]);
     if (!target) return reply.code(404).send({ error: 'no_keys' });
     await q(
-      `INSERT INTO e2e_library_members (library_id, user_id, role, key_version, wrap_alg, wrapped_key, added_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (library_id, user_id) DO UPDATE SET role = EXCLUDED.role, key_version = EXCLUDED.key_version,
-         wrap_alg = EXCLUDED.wrap_alg, wrapped_key = EXCLUDED.wrapped_key`,
-      [p.data.id, p.data.userId, b.data.role, b.data.keyVersion, b.data.wrapAlg, b.data.wrappedKey, uid(req)]);
+      `INSERT INTO e2e_vault_members (library_id, user_id, role, wrap_alg, wrapped_key, added_by) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (library_id, user_id) DO UPDATE SET role = EXCLUDED.role, wrap_alg = EXCLUDED.wrap_alg, wrapped_key = EXCLUDED.wrapped_key`,
+      [p.data.id, p.data.userId, b.data.role, b.data.wrapAlg, b.data.wrappedKey, uid(req)]);
+    await loadVaults();
     void logAudit('e2e.member.put', { userId: uid(req), req, detail: { library: p.data.id, member: p.data.userId, role: b.data.role } });
     return { ok: true };
   });
 
   /**
-   * Remove a member (the owner), or leave (anyone but the owner). The server stops serving them at once; the owner's
-   * browser should then rotate the key (below), so a key they kept opens nothing added afterwards.
+   * Remove a member (the owner), or leave (anyone but the owner). The server stops serving them at once. The vault's
+   * key is not rotated: that would mean re-encrypting every chapter in a browser, and a removed member who copied the
+   * key would also need the server's files to use it.
    */
-  app.delete('/api/e2e/libraries/:id/members/:userId', async (req, reply) => {
-    const p = z.object({ id: uuid, userId: uuid }).safeParse(req.params);
+  app.delete('/api/e2e/vaults/:id/members/:userId', async (req, reply) => {
+    const p = z.object({ id: vaultId, userId: uuid }).safeParse(req.params);
     if (!p.success) return reply.code(404).send(NOT_FOUND);
     const self = p.data.userId === uid(req);
-    const m = await need(req, reply, p.data.id, self ? 'reader' : 'owner');
-    if (!m) return;
-    if (p.data.userId === m.owner_id) return reply.code(409).send({ error: 'is_owner' });
-    await q('DELETE FROM e2e_library_members WHERE library_id = $1 AND user_id = $2', [p.data.id, p.data.userId]);
+    if (!(await need(req, reply, p.data.id, self ? 'reader' : 'owner'))) return;
+    if (p.data.userId === vaultOf(p.data.id)?.ownerId) return reply.code(409).send({ error: 'is_owner' });
+    await q('DELETE FROM e2e_vault_members WHERE library_id = $1 AND user_id = $2', [p.data.id, p.data.userId]);
+    await loadVaults();
     void logAudit('e2e.member.remove', { userId: uid(req), req, detail: { library: p.data.id, member: p.data.userId } });
     return reply.code(204).send();
   });
 
-  /**
-   * Rotate the library key: a new key version, wrapped to EVERY current member and re-wrapping EVERY item's key.
-   * All or nothing, in one transaction; anything short of the full set is refused, so no member or item is ever
-   * left on a key version the library no longer has. The chunks are not touched: they are under item keys.
-   */
-  app.post('/api/e2e/libraries/:id/rotate', { bodyLimit: 16 * 1024 * 1024 }, async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    const b = z.object({
-      fromVersion: z.number().int().min(1),
-      meta: opaque(16_384),
-      members: z.array(z.object({ userId: uuid, wrapAlg: name, wrappedKey: opaque(2048) })).min(1).max(1000),
-      items: z.array(z.object({ id: uuid, wrappedKey: opaque(2048) })).max(200_000),
-    }).safeParse(req.body ?? {});
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    if (!b.success) return bad(reply);
-    if (!(await need(req, reply, id.data, 'owner'))) return;
-    const out = await tx(async (qq) => {
-      const [lib] = await qq<{ key_version: number }>('SELECT key_version FROM e2e_libraries WHERE id = $1 FOR UPDATE', [id.data]);
-      if (!lib) return { code: 404, body: NOT_FOUND };
-      if (lib.key_version !== b.data.fromVersion) return { code: 409, body: { error: 'stale_key', keyVersion: lib.key_version } };
-      const members = await qq<{ user_id: string }>('SELECT user_id FROM e2e_library_members WHERE library_id = $1', [id.data]);
-      const items = await qq<{ id: string }>('SELECT id FROM e2e_items WHERE library_id = $1', [id.data]);
-      const same = (have: string[], sent: string[]) => have.length === sent.length && new Set(sent).size === sent.length && sent.every((s) => have.includes(s));
-      if (!same(members.map((r) => r.user_id), b.data.members.map((r) => r.userId))) return { code: 409, body: { error: 'members_changed' } };
-      if (!same(items.map((r) => r.id), b.data.items.map((r) => r.id))) return { code: 409, body: { error: 'items_changed' } };
-      const next = lib.key_version + 1;
-      await qq('UPDATE e2e_libraries SET key_version = $2, meta = $3, updated_at = now() WHERE id = $1', [id.data, next, b.data.meta]);
-      for (const m of b.data.members) {
-        await qq('UPDATE e2e_library_members SET key_version = $3, wrap_alg = $4, wrapped_key = $5 WHERE library_id = $1 AND user_id = $2',
-          [id.data, m.userId, next, m.wrapAlg, m.wrappedKey]);
-      }
-      if (b.data.items.length) {
-        await qq(`UPDATE e2e_items i SET key_version = $2, wrapped_key = v.k, updated_at = now()
-                    FROM unnest($3::uuid[], $4::text[]) AS v(id, k) WHERE i.id = v.id AND i.library_id = $1`,
-          [id.data, next, b.data.items.map((i) => i.id), b.data.items.map((i) => i.wrappedKey)]);
-      }
-      return { code: 200, body: { ok: true, keyVersion: next } };
-    });
-    if (out.code === 200) void logAudit('e2e.library.rotate', { userId: uid(req), req, detail: { library: id.data } });
-    return reply.code(out.code).send(out.body);
-  });
-
-  // ── Items ────────────────────────────────────────────────────────────────────────────────────────────────
-
-  app.get('/api/e2e/libraries/:id/items', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    const m = await need(req, reply, id.data, 'reader');
-    if (!m) return;
-    // Pending (still uploading) items are the editors' business; a reader sees what is finished.
-    const rows = await q<ItemRow>(
-      `SELECT * FROM e2e_items WHERE library_id = $1 AND (state = 'ready' OR $2) ORDER BY created_at`, [id.data, RANK[m.role] >= RANK.editor]);
-    return rows.map(itemOut);
-  });
-
-  /** Start an item: its wrapped content key and metadata. Chunks follow, then a commit. The id is the browser's (see libraries). */
-  app.post('/api/e2e/libraries/:id/items', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    const b = z.object({ id: uuid, keyVersion: z.number().int().min(1), wrappedKey: opaque(2048), meta: opaque(65_536) }).safeParse(req.body ?? {});
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    if (!b.success) return bad(reply);
-    const m = await need(req, reply, id.data, 'editor');
-    if (!m) return;
-    if (b.data.keyVersion !== m.library_key_version) return reply.code(409).send({ error: 'stale_key', keyVersion: m.library_key_version });
-    const row = await one<ItemRow>(
-      `INSERT INTO e2e_items (id, library_id, key_version, wrapped_key, meta, created_by) VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (id) DO NOTHING RETURNING *`, [b.data.id, id.data, b.data.keyVersion, b.data.wrappedKey, b.data.meta, uid(req)]);
-    if (!row) return reply.code(409).send({ error: 'exists' });
-    return itemOut(row);
-  });
-
-  app.put('/api/e2e/items/:id/chunks/:n', async (req, reply) => {
-    const p = z.object({ id: uuid, n: z.coerce.number().int().min(0).max(MAX_CHUNKS - 1) }).safeParse(req.params);
-    if (!p.success) return reply.code(404).send(NOT_FOUND);
-    const body = req.body;
-    // 12-byte IV + 16-byte tag is the least an AES-GCM chunk can be.
-    if (!Buffer.isBuffer(body) || body.length < 28) return bad(reply, 'octet-stream body expected');
-    const r = await needItem(req, reply, p.data.id, 'editor');
-    if (!r) return;
-    if (r.item.state !== 'pending') return reply.code(409).send({ error: 'committed' });
-    await store.writeChunk(r.item.library_id, r.item.id, p.data.n, body);
-    await q('UPDATE e2e_items SET updated_at = now() WHERE id = $1', [r.item.id]);
-    return { ok: true, bytes: body.length };
-  });
-
-  /** Seal an upload: every chunk 0..chunks-1 must be there. After this the item is read-only. */
-  app.post('/api/e2e/items/:id/commit', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    const b = z.object({ chunks: z.number().int().min(1).max(MAX_CHUNKS) }).safeParse(req.body ?? {});
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    if (!b.success) return bad(reply);
-    const r = await needItem(req, reply, id.data, 'editor');
-    if (!r) return;
-    if (r.item.state !== 'pending') return reply.code(409).send({ error: 'committed' });
-    const sizes = await store.chunkSizes(r.item.library_id, r.item.id, b.data.chunks);
-    if (!sizes) return reply.code(409).send({ error: 'missing_chunks' });
-    await store.dropChunksFrom(r.item.library_id, r.item.id, b.data.chunks);
-    const row = await one<ItemRow>(
-      `UPDATE e2e_items SET state = 'ready', chunks = $2, size = $3, updated_at = now() WHERE id = $1 AND state = 'pending' RETURNING *`,
-      [r.item.id, b.data.chunks, sizes.reduce((a, s) => a + s, 0)]);
-    if (!row) return reply.code(409).send({ error: 'committed' });
-    return itemOut(row);
-  });
-
-  app.get('/api/e2e/items/:id/chunks/:n', async (req, reply) => {
-    const p = z.object({ id: uuid, n: z.coerce.number().int().min(0).max(MAX_CHUNKS - 1) }).safeParse(req.params);
-    if (!p.success) return reply.code(404).send(NOT_FOUND);
-    const r = await needItem(req, reply, p.data.id, 'reader');
-    if (!r) return;
-    if (r.item.state !== 'ready' || p.data.n >= r.item.chunks) return reply.code(404).send(NOT_FOUND);
-    const c = await store.openChunk(r.item.library_id, r.item.id, p.data.n);
-    if (!c) return reply.code(404).send(NOT_FOUND);
-    return reply.type('application/octet-stream').header('content-length', c.size)
-      .header('cache-control', 'private, no-store').header('x-content-type-options', 'nosniff').send(c.stream);
-  });
-
-  /** New encrypted metadata for an item (a rename). */
-  app.patch('/api/e2e/items/:id', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    const b = z.object({ meta: opaque(65_536) }).safeParse(req.body ?? {});
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    if (!b.success) return bad(reply);
-    const r = await needItem(req, reply, id.data, 'editor');
-    if (!r) return;
-    await q('UPDATE e2e_items SET meta = $2, updated_at = now() WHERE id = $1', [r.item.id, b.data.meta]);
-    return { ok: true };
-  });
-
-  app.delete('/api/e2e/items/:id', async (req, reply) => {
-    const id = uuid.safeParse((req.params as { id: string }).id);
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    const r = await needItem(req, reply, id.data, 'editor');
-    if (!r) return;
-    await q('DELETE FROM e2e_items WHERE id = $1', [r.item.id]);
-    await store.removeItem(r.item.library_id, r.item.id).catch(() => {});
-    return reply.code(204).send();
-  });
+  /** The caller's vault ids, for the series menu (cheap: from memory). */
+  app.get('/api/e2e/mine', async (req) => ({ vaults: vaultsOf(uid(req)) }));
 }

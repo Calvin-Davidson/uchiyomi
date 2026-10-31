@@ -18,6 +18,7 @@ import { downloadsHref } from '@/lib/libraryView';
 import { alertTone, headlineText } from '@/lib/healthAlert';
 import { INTENT_MS } from '@/lib/motion';
 import type { NavRing } from '@/lib/serverDownloads';
+import { useVaultNav } from '@/fork/e2e/hooks'; // fork-only: e2e vault
 
 // The desktop's main menu (UI refresh): a slim rail of icons down the start edge, with the art of a page running
 // underneath it, that opens into a labelled panel over the page while the pointer rests on it. It took the place of
@@ -74,6 +75,7 @@ export function Sidebar() {
   const offline = status === 'offline';
   const downloader = status === 'authed' && canDownload(user);
   const ring = useDownloadsRing();
+  const vaultNav = useVaultNav(); // fork-only: "Vault" under Library
   const { data: health } = useHealthSummary();
   const tone = alertTone(health);
   const layers = useLayers();
@@ -163,6 +165,7 @@ export function Sidebar() {
               sub: ring.show && ring.label ? { text: `${tr('Server downloads')} · ${ring.label}`, href: downloadsHref() } : undefined,
             })
             : link(i))}
+          {vaultNav && link(vaultNav, { sub: vaultNav.sub })}{/* fork-only: e2e vault */}
           <div className="my-2 h-px shrink-0 bg-white/[0.06]" aria-hidden />
           {more.map((i) => link(i))}
           <div className="flex-1" />
