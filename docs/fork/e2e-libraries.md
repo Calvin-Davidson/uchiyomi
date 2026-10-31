@@ -10,7 +10,7 @@ and read them in the normal reader. Two things are different:
 ## Using it
 
 1. Sign in with your password. That creates your key pair the first time and unlocks it on that device.
-2. Open **Vault** in the menu (under Library) and choose **Create vault**.
+2. Your vault is created automatically the first time your key is unlocked: **Vault** sits under Library in the menu.
 3. Add series the usual way, then choose **Move to vault** on the series card's menu. Its existing chapters are
    encrypted in the background, and every chapter fetched for it after that is encrypted before it's written to disk.
 4. **Vault** in the menu now opens the Library filtered to the vault. **Manage vault** (under it, or `/vault`) shows

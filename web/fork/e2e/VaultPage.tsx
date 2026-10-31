@@ -56,38 +56,36 @@ function PasswordField({ value, onChange }: { value: string; onChange: (v: strin
   return <input type="password" autoComplete="current-password" className="field mt-3 max-w-none" placeholder="Your account password" value={value} onChange={(e) => onChange(e.target.value)} />;
 }
 
+/** No vault yet: it is made by itself once this device holds the key; until then, the one password field. */
 function CreateVault({ userId, status, unlocked, onDone }: { userId: string; status: S.VaultStatus; unlocked: boolean; onDone: () => Promise<void> }) {
-  const [name, setName] = useState('Vault');
   const [pw, setPw] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const needPw = !status.hasKeys || !unlocked;
+  const ready = status.hasKeys && unlocked;
+  useEffect(() => {
+    if (!ready || !status.passwordAccount) return;
+    S.ensureVault(userId).then(onDone).catch((e) => setErr(msg(e)));
+  }, [ready, status.passwordAccount, userId, onDone]);
   if (!status.passwordAccount) {
     return <p className="mt-6 max-w-xl text-sm text-fog-400">A vault is unlocked with your account password, and this account signs in without one (single sign-on or a profile). Ask an admin to give it a password to use a vault.</p>;
   }
-  const create = async () => {
-    if (!name.trim() || (needPw && !pw) || busy) return;
+  if (ready) return err ? <p className="mt-6 text-sm text-red-400">{err}</p> : <div className="skeleton mt-4 h-40 rounded-2xl" />;
+  const unlock = async () => {
+    if (!pw || busy) return;
     setBusy(true); setErr('');
-    try {
-      if (needPw) await S.unlockWithPassword(userId, pw, false);
-      const fresh = await S.fetchStatus();
-      if (!fresh?.publicKey) throw new Error('no keys');
-      await S.createVault(userId, fresh.publicKey, name.trim());
-      await onDone();
-    } catch (e) { setErr(msg(e)); } finally { setBusy(false); }
+    try { await S.unlockWithPassword(userId, pw, false); await onDone(); } catch (e) { setErr(msg(e)); } finally { setBusy(false); }
   };
   return (
     <section className="mt-4 max-w-lg rounded-2xl border border-ink-700 bg-ink-850 p-5">
-      <h2 className="font-display text-lg font-semibold">Create your vault</h2>
+      <h2 className="font-display text-lg font-semibold">Unlock your vault on this device</h2>
       <p className="mt-1 text-sm text-fog-400">
-        Your account password unlocks it: signing in unlocks it on that device. If you forget your password and no signed-in
-        device is left, nobody can read the vault again, not even an admin.
+        This device was signed in before your vault existed. Enter your account password once; signing in with it does this
+        by itself from now on.
       </p>
-      <input className="field mt-4 max-w-none" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-      {needPw && <PasswordField value={pw} onChange={setPw} />}
+      <PasswordField value={pw} onChange={setPw} />
       {err && <p className="mt-2 text-xs text-red-400">{err}</p>}
-      <button className="btn-accent mt-4 w-full py-2.5 text-sm disabled:opacity-50" disabled={!name.trim() || (needPw && !pw) || busy} onClick={create}>
-        {busy ? 'Creating…' : 'Create vault'}
+      <button className="btn-accent mt-4 w-full py-2.5 text-sm disabled:opacity-50" disabled={!pw || busy} onClick={unlock}>
+        {busy ? 'Unlocking…' : 'Unlock'}
       </button>
     </section>
   );

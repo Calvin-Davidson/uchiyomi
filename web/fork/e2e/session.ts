@@ -52,6 +52,25 @@ const secure = (): boolean => typeof window !== 'undefined' && !!window.isSecure
  * Throws Error('wrong_password') when the password does not open the key and this device holds no copy to re-wrap.
  */
 export async function unlockWithPassword(userId: string, password: string, verified: boolean): Promise<void> {
+  await unlockKey(userId, password, verified);
+  await ensureVault(userId);
+}
+
+let ensuring: Promise<void> | null = null;
+/**
+ * Every password account has its own vault: made here, the first time its key is unlocked, so nobody has to "create"
+ * one. Joined while running, so a sign-in and the Vault page at once make one vault, not two.
+ */
+export function ensureVault(userId: string): Promise<void> {
+  return ensuring ??= (async () => {
+    const status = await fetchStatus();
+    if (!status?.publicKey || !status.passwordAccount || status.vaults.some((v) => v.ownerId === userId)) return;
+    if (!(await hasDeviceKey(userId))) return;
+    await createVault(userId, status.publicKey, 'Vault');
+  })().finally(() => { ensuring = null; });
+}
+
+async function unlockKey(userId: string, password: string, verified: boolean): Promise<void> {
   let keys = await api<KeysDoc>('/api/e2e/keys').catch((e) => {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
