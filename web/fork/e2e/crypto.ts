@@ -1,12 +1,10 @@
 // Fork-only: the browser side of end-to-end encrypted vaults, with WebCrypto. The server (bff/src/fork/e2e) stores
-// public keys and what this file seals, and can read none of it. The service worker (public/e2e-sw.js) repeats the
-// two operations it needs to open a page (openFrom, AES-GCM); keep the formats in step with it and with
-// bff/src/fork/e2e/crypto.ts.
+// public keys and what this file seals, and can read none of it. Keep the formats in step with bff/src/fork/e2e/crypto.ts.
 //
 //   account password ──PBKDF2──▶ KEK ──AES-GCM──▶ member private key (ECDH P-256)        e2e_key_wraps
 //   member public key ◀──ECIES── vault private key (ECDH P-256)                          e2e_vault_members
-//   vault public key ◀──ECIES── chapter key (the SERVER seals it, at download)           in each sealed page
-//   chapter key ──AES-GCM──▶ page                                                        the chapter file
+//   vault public key ◀──ECIES── item key (the SERVER seals it, when a series is moved in)  e2e_vault_items.item_key
+//   item key ──AES-GCM──▶ manifest, cover, pages, each member's progress
 //
 // The member private key is unlocked through an `Unlocker`. `passwordUnlocker` derives the KEK from the account
 // password at sign-in; this device then keeps the key under a non-extractable device key (device.ts) -- the DAK. A
@@ -48,7 +46,11 @@ export const newId = (): string => crypto.randomUUID();
 export const ad = {
   identity: (userId: string) => utf8(`uchiyomi-e2e/v1/identity/${userId}`),
   vaultKey: (libraryId: string, userId: string) => utf8(`uchiyomi-e2e/v2/vault-key/${libraryId}/${userId}`),
-  chapterKey: (libraryId: string) => utf8(`uchiyomi-e2e/v2/chapter-key/${libraryId}`),
+  itemKey: (vaultId: string, itemId: string) => utf8(`uchiyomi-e2e/v3/item-key/${vaultId}/${itemId}`),
+  meta: (itemId: string) => utf8(`uchiyomi-e2e/v3/meta/${itemId}`),
+  cover: (itemId: string) => utf8(`uchiyomi-e2e/v3/cover/${itemId}`),
+  page: (itemId: string, chapter: number, page: number) => utf8(`uchiyomi-e2e/v3/page/${itemId}/${chapter}/${page}`),
+  state: (itemId: string, userId: string) => utf8(`uchiyomi-e2e/v3/state/${itemId}/${userId}`),
 };
 
 // ── AES-256-GCM ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -168,27 +170,19 @@ export async function openFrom(priv: CryptoKey, sealed: string, aad: Bytes): Pro
   return ungcm(key, unb64u(iv), unb64u(ct), aad);
 }
 
-// ── Sealed pages ───────────────────────────────────────────────────────────────────────────────────────────────
-// "UYE2" | u32 header length (big-endian) | header JSON {v, k, t, w, h} | iv (12) | AES-GCM ciphertext+tag, where the
-// associated data is everything before the iv. Written by the server (bff/src/fork/e2e/crypto.ts sealPage).
+// ── Items ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export interface PageHeader { v: 2; k: string; t: string; w: number | null; h: number | null }
-
-export function isSealedPage(b: Uint8Array): boolean {
-  return b.length > 8 && b[0] === 0x55 && b[1] === 0x59 && b[2] === 0x45 && b[3] === 0x32;
+/** An item's key, opened with the vault's private key. Extractable only when `forRestore` (it is sent to the server). */
+export async function openItemKey(vaultPriv: CryptoKey, vaultId: string, itemId: string, sealed: string, forRestore = false): Promise<{ key: CryptoKey; raw?: Bytes }> {
+  const raw = await openFrom(vaultPriv, sealed, ad.itemKey(vaultId, itemId));
+  const key = await importAes(raw);
+  if (forRestore) return { key, raw };
+  raw.fill(0);
+  return { key };
 }
 
-/** Open a sealed page with the vault's private key. `chapterKeys` caches opened chapter keys by their sealed form. */
-export async function openPage(b: Bytes, vaultPriv: CryptoKey, libraryId: string, chapterKeys?: Map<string, CryptoKey>): Promise<{ type: string; bytes: Bytes }> {
-  if (!isSealedPage(b)) throw new Error('not a sealed page');
-  const n = new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(4);
-  const header = JSON.parse(new TextDecoder().decode(b.subarray(8, 8 + n))) as PageHeader;
-  let ck = chapterKeys?.get(header.k);
-  if (!ck) {
-    ck = await importAes(await openFrom(vaultPriv, header.k, ad.chapterKey(libraryId)), ['decrypt']);
-    chapterKeys?.set(header.k, ck);
-  }
-  const aad = b.slice(0, 8 + n);
-  const iv = b.slice(8 + n, 20 + n);
-  return { type: header.t, bytes: await ungcm(ck, iv, b.slice(20 + n), aad) };
-}
+/** One record, `iv (12) | ciphertext+tag`: a page or a cover, as the server stores it. */
+export const openRecord = (key: CryptoKey, rec: Bytes, aad: Bytes): Promise<Bytes> => ungcm(key, rec.slice(0, 12), rec.slice(12), aad);
+
+export const openJson = async <T,>(key: CryptoKey, sealed: string, aad: Bytes): Promise<T> => JSON.parse(dec.decode(await openString(key, sealed, aad))) as T;
+export const sealJson = (key: CryptoKey, value: unknown, aad: Bytes): Promise<string> => sealString(key, utf8(JSON.stringify(value)), aad);

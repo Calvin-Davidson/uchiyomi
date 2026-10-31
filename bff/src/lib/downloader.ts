@@ -14,7 +14,6 @@ import { classify, noteStage, reportOk, reportFail, SourceStatus } from './sourc
 import { withGate } from './gate';
 import { imageExt } from './imageExt';
 import { writeAtomic } from './fsAtomic';
-import { sealZipForFolder } from '../fork/e2e/seal'; // fork-only: e2e vaults
 import { pagePace, paceLevel, noteDownloaded, notePageHosts, noteRateLimited, rateKeyOf, restLeft, resumePace } from './pace';
 import { drawGap } from './archivePace';
 import { pageName, placeholderPng, PARTIAL_MANIFEST, type PartialManifest } from './partial';
@@ -817,7 +816,7 @@ async function fetchChapter(
   if (await realContainedPath(DL_ROOT, rel) !== abs) throw new Error('unsafe download path outside the library root');
   // Atomic, because the skip check at the top of downloadChapter is a bare stat(): a chapter half-written
   // when the container went down would otherwise be honoured as complete on every later sweep, forever.
-  await writeAtomic(abs, await sealZipForFolder(input.seriesFolder, zip)); // fork-only: sealed when the series is in a vault
+  await writeAtomic(abs, zip.toBuffer());
   return { file: rel, pages: n };
 }
 
@@ -888,7 +887,7 @@ function holdFor(
       // Placeholder generation and ZIP assembly are asynchronous. Policy can change during either, so the
       // delayed write gets its own final guard at the actual atomic replacement boundary.
       await assertDownloadPreflight(preflight);
-      await writeAtomic(abs, await sealZipForFolder(input.seriesFolder, zip)); // fork-only: sealed when the series is in a vault
+      await writeAtomic(abs, zip.toBuffer());
       return { file: rel, pages: total, missing };
     })(),
   };

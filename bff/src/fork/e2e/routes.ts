@@ -1,26 +1,26 @@
 // Fork-only: end-to-end encrypted vaults. HTTP routes, all under /api/e2e.
 //
-// A vault is an ordinary library (a `libraries` row): its series are followed, checked for new chapters, downloaded,
-// listed and read like any other. What differs is that every chapter file in it is sealed to the vault's public key
-// (seal.ts), only its members see it (vaults.ts, through lib/visibility.ts), and their browsers decrypt the pages
-// (web/public/e2e-sw.js). The server holds public keys and sealed private keys only; it can never read a page.
+// A vault is not a library. A series moved into one (move.ts) leaves the library completely, and what the vault holds
+// of it -- title, metadata, chapter list, cover, pages, each member's reading progress -- is encrypted under the item's
+// key, which is sealed to the vault's public key. Members' browsers open it (web/fork/e2e); the server can't.
 //
 // Keys: each account has a key pair whose private half is wrapped in the browser by a KEK derived from the account
 // password (`kind = 'password'`). Each vault has a key pair whose private half is sealed to each member's public key.
 //
-// Roles, per vault: `owner` (one; members, rename, delete), `editor` (moves series in), `reader`. Being a server admin
+// Roles, per vault: `owner` (one; members, delete), `editor` (moves series in and out), `reader`. Being a server admin
 // grants nothing here.
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import { verify } from '@node-rs/argon2';
 import { z } from 'zod';
+import path from 'path';
+import { open, readFile, rm } from 'fs/promises';
 import { q, one, tx } from '../../lib/db';
 import { authenticate, userIdOf, roleOf } from '../../lib/auth';
 import { logAudit } from '../../lib/audit';
 import { seriesVisible, viewCtxFor } from '../../lib/visibility';
-import { vaultPublicKey } from './crypto';
-import { loadVaults, vaultOf, vaultsOf } from './vaults';
-import { sealStatus, sweepVaults } from './seal';
+import { CHAPTER_MAGIC, recordSpan, vaultPublicKey } from './crypto';
+import { chapterPath, coverPath, jobOf, moveIn, moveOut, openManifest, VAULT_DIR } from './move';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const uuid = z.string().regex(UUID_RE).transform((s) => s.toLowerCase());
@@ -31,7 +31,6 @@ const opaque = (max: number) => z.string().min(1).max(max).regex(/^[A-Za-z0-9_\-
 const name = z.string().regex(/^[a-z0-9][a-z0-9.\-]{0,39}$/);
 const params = z.record(z.string(), z.unknown()).refine((p) => JSON.stringify(p).length <= 4096, 'params too large');
 const role = z.enum(['editor', 'reader']);
-const title = z.string().trim().min(1).max(80);
 
 /** Vaults one account may own. */
 const MAX_OWNED = 5;
@@ -51,7 +50,7 @@ export default async function e2eRoutes(app: FastifyInstance) {
 
   /** The caller's role in a vault, or a 404 already sent (a vault you are not in does not exist to you). */
   async function need(req: FastifyRequest, reply: FastifyReply, id: string, min: Role): Promise<Role | null> {
-    const r = vaultOf(id)?.members.get(uid(req));
+    const r = (await one<{ role: Role }>('SELECT role FROM e2e_vault_members WHERE vault_id = $1 AND user_id = $2', [id, uid(req)]))?.role;
     if (!r) { reply.code(404).send(NOT_FOUND); return null; }
     if (RANK[r] < RANK[min]) { reply.code(403).send(FORBIDDEN); return null; }
     return r;
@@ -66,9 +65,9 @@ export default async function e2eRoutes(app: FastifyInstance) {
       one<{ public_key: string }>('SELECT public_key FROM e2e_user_keys WHERE user_id = $1', [me]),
       one<{ has_password: boolean }>(`SELECT (auth_kind = 'password' AND password_login) AS has_password FROM users WHERE id = $1`, [me]),
     ]);
-    const vaults = await q<{ library_id: string; name: string; role: Role; owner_id: string; public_key: string; wrap_alg: string; wrapped_key: string }>(
-      `SELECT v.library_id, l.name, m.role, v.owner_id, v.public_key, m.wrap_alg, m.wrapped_key
-         FROM e2e_vault_members m JOIN e2e_vaults v ON v.library_id = m.library_id JOIN libraries l ON l.id = v.library_id
+    const vaults = await q<{ id: string; role: Role; owner_id: string; public_key: string; wrap_alg: string; wrapped_key: string }>(
+      `SELECT v.id, m.role, v.owner_id, v.public_key, m.wrap_alg, m.wrapped_key
+         FROM e2e_vault_members m JOIN e2e_vaults v ON v.id = m.vault_id
         WHERE m.user_id = $1 ORDER BY v.created_at`, [me]);
     return {
       enabled: true,
@@ -76,7 +75,7 @@ export default async function e2eRoutes(app: FastifyInstance) {
       publicKey: k?.public_key ?? null,
       // A vault is unlocked with the account password: an account signing in by SSO or a passwordless profile has none.
       passwordAccount: !!user?.has_password,
-      vaults: vaults.map((v) => ({ id: v.library_id, name: v.name, role: v.role, ownerId: v.owner_id, publicKey: v.public_key, wrapAlg: v.wrap_alg, wrappedKey: v.wrapped_key })),
+      vaults: vaults.map((v) => ({ id: v.id, role: v.role, ownerId: v.owner_id, publicKey: v.public_key, wrapAlg: v.wrap_alg, wrappedKey: v.wrapped_key })),
     };
   });
 
@@ -138,7 +137,6 @@ export default async function e2eRoutes(app: FastifyInstance) {
       await qq('DELETE FROM e2e_vault_members WHERE user_id = $1', [me]);
       await qq('DELETE FROM e2e_user_keys WHERE user_id = $1', [me]);
     });
-    await loadVaults();
     void logAudit('e2e.keys.reset', { userId: me, req });
     return reply.code(204).send();
   });
@@ -194,12 +192,9 @@ export default async function e2eRoutes(app: FastifyInstance) {
 
   // ── Vaults ───────────────────────────────────────────────────────────────────────────────────────────────
 
-  /**
-   * A new vault: a library row (no folder of its own -- series are moved in, and stay pinned there), its public key,
-   * and the owner's sealed copy of its private key. The key pair is made in the browser.
-   */
+  /** A new vault: its key pair is made in the browser; the server gets the public half and the private half sealed to the owner. */
   app.post('/api/e2e/vaults', async (req, reply) => {
-    const b = z.object({ id: vaultId, name: title, alg: name, publicKey: opaque(2048), wrapAlg: name, wrappedKey: opaque(4096) }).safeParse(req.body ?? {});
+    const b = z.object({ id: vaultId, alg: name, publicKey: opaque(2048), wrapAlg: name, wrappedKey: opaque(4096) }).safeParse(req.body ?? {});
     if (!b.success) return bad(reply);
     try { vaultPublicKey(b.data.publicKey); } catch { return bad(reply); }
     const me = uid(req);
@@ -209,101 +204,147 @@ export default async function e2eRoutes(app: FastifyInstance) {
       if (!(await qq('SELECT 1 FROM e2e_user_keys WHERE user_id = $1', [me])).length) return 'no_keys';
       const [{ n }] = await qq<{ n: number }>('SELECT count(*)::int AS n FROM e2e_vaults WHERE owner_id = $1', [me]);
       if (n >= MAX_OWNED) return 'too_many';
-      if ((await qq('SELECT 1 FROM libraries WHERE id = $1', [id])).length) return 'exists';
-      // A path no folder has, so the folder rule (lib/library.ts libraryIdFor) never files anything here by itself.
-      await qq(`INSERT INTO libraries (id, name, path, sort_order) VALUES ($1, $2, $3, 1000)`, [id, b.data.name, `.uchiyomi-vault/${id}`]);
-      await qq('INSERT INTO e2e_vaults (library_id, owner_id, alg, public_key) VALUES ($1, $2, $3, $4)', [id, me, b.data.alg, b.data.publicKey]);
-      await qq(`INSERT INTO e2e_vault_members (library_id, user_id, role, wrap_alg, wrapped_key, added_by) VALUES ($1, $2, 'owner', $3, $4, $2)`,
+      if ((await qq('SELECT 1 FROM e2e_vaults WHERE id = $1', [id])).length) return 'exists';
+      await qq('INSERT INTO e2e_vaults (id, owner_id, alg, public_key) VALUES ($1, $2, $3, $4)', [id, me, b.data.alg, b.data.publicKey]);
+      await qq(`INSERT INTO e2e_vault_members (vault_id, user_id, role, wrap_alg, wrapped_key, added_by) VALUES ($1, $2, 'owner', $3, $4, $2)`,
         [id, me, b.data.wrapAlg, b.data.wrappedKey]);
       return 'ok';
     });
     if (out !== 'ok') return reply.code(409).send({ error: out });
-    await loadVaults();
-    void logAudit('e2e.vault.create', { userId: me, req, detail: { library: id } });
+    void logAudit('e2e.vault.create', { userId: me, req, detail: { vault: id } });
     return { id };
   });
 
-  /** One vault: who is in it, and how far its chapters are sealed. */
+  /** One vault: who is in it, and its items -- each one's sealed key, encrypted manifest and the caller's encrypted progress. */
   app.get('/api/e2e/vaults/:id', async (req, reply) => {
     const id = vaultId.safeParse((req.params as { id: string }).id);
     if (!id.success) return reply.code(404).send(NOT_FOUND);
     const myRole = await need(req, reply, id.data, 'reader');
     if (!myRole) return;
-    const [lib, members, seal, series] = await Promise.all([
-      one<{ name: string }>('SELECT name FROM libraries WHERE id = $1', [id.data]),
+    const [members, items, states] = await Promise.all([
       q<{ user_id: string; username: string | null; display_name: string; role: Role; public_key: string | null }>(
         `SELECT m.user_id, u.username, u.display_name, m.role, k.public_key
            FROM e2e_vault_members m JOIN users u ON u.id = m.user_id LEFT JOIN e2e_user_keys k ON k.user_id = m.user_id
-          WHERE m.library_id = $1 ORDER BY (m.role = 'owner') DESC, m.created_at`, [id.data]),
-      sealStatus(id.data),
-      one<{ n: number }>('SELECT count(*)::int AS n FROM lib_series WHERE library_id = $1 AND deleted_at IS NULL', [id.data]),
+          WHERE m.vault_id = $1 ORDER BY (m.role = 'owner') DESC, m.created_at`, [id.data]),
+      q<{ id: string; item_key: string; meta: string; chapters: number; bytes: string; created_at: Date }>(
+        'SELECT id, item_key, meta, chapters, bytes, created_at FROM e2e_vault_items WHERE vault_id = $1 ORDER BY created_at DESC', [id.data]),
+      q<{ item_id: string; sealed: string }>(
+        `SELECT s.item_id, s.sealed FROM e2e_vault_state s JOIN e2e_vault_items i ON i.id = s.item_id
+          WHERE i.vault_id = $1 AND s.user_id = $2`, [id.data, uid(req)]),
     ]);
+    const state = new Map(states.map((s) => [s.item_id, s.sealed]));
     return {
-      id: id.data, name: lib?.name ?? '', role: myRole, series: series?.n ?? 0, seal,
+      id: id.data, role: myRole,
       members: members.map((m) => ({ userId: m.user_id, username: m.username, displayName: m.display_name, role: m.role, publicKey: m.public_key })),
+      items: items.map((i) => ({ id: i.id, itemKey: i.item_key, meta: i.meta, chapters: i.chapters, bytes: Number(i.bytes), createdAt: i.created_at, state: state.get(i.id) ?? null })),
     };
   });
 
-  app.patch('/api/e2e/vaults/:id', async (req, reply) => {
-    const id = vaultId.safeParse((req.params as { id: string }).id);
-    const b = z.object({ name: title }).safeParse(req.body ?? {});
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    if (!b.success) return bad(reply);
-    if (!(await need(req, reply, id.data, 'owner'))) return;
-    await q('UPDATE libraries SET name = $2 WHERE id = $1', [id.data, b.data.name]);
-    return { ok: true };
-  });
-
-  /** Delete an EMPTY vault. Its series are removed from the library first, the usual way; nothing here deletes files. */
+  /** Delete an EMPTY vault. Its series are moved out first: nothing here throws encrypted series away. */
   app.delete('/api/e2e/vaults/:id', async (req, reply) => {
     const id = vaultId.safeParse((req.params as { id: string }).id);
     if (!id.success) return reply.code(404).send(NOT_FOUND);
     if (!(await need(req, reply, id.data, 'owner'))) return;
-    if (await one('SELECT 1 FROM lib_series WHERE library_id = $1 AND deleted_at IS NULL', [id.data])) return reply.code(409).send({ error: 'not_empty' });
-    await tx(async (qq) => {
-      // Series removed earlier keep their row (a removed series can be put back); they go back to the main library.
-      await qq(`UPDATE lib_series SET library_id = 'lib', library_pinned = false WHERE library_id = $1`, [id.data]);
-      await qq('DELETE FROM user_libraries WHERE library_id = $1', [id.data]);
-      await qq('DELETE FROM libraries WHERE id = $1', [id.data]);
-    });
-    await loadVaults();
-    void logAudit('e2e.vault.delete', { userId: uid(req), req, detail: { library: id.data } });
+    if (await one('SELECT 1 FROM e2e_vault_items WHERE vault_id = $1', [id.data])) return reply.code(409).send({ error: 'not_empty' });
+    await q('DELETE FROM e2e_vaults WHERE id = $1', [id.data]);
+    await rm(path.join(VAULT_DIR, id.data), { recursive: true, force: true }).catch(() => {});
+    void logAudit('e2e.vault.delete', { userId: uid(req), req, detail: { vault: id.data } });
     return reply.code(204).send();
   });
 
-  /**
-   * Move series into a vault. Each must be one the caller can see, and not already in a vault. They are pinned there
-   * (the folder rule never takes them back out), their chapter files are sealed in the background, and every chapter
-   * fetched for them from now on is sealed before it is written. There is no way back out: the server cannot decrypt.
-   */
+  /** Move a series in. It must be one the caller can see. Answers with a job to poll; the series leaves the library at its end. */
   app.post('/api/e2e/vaults/:id/series', async (req, reply) => {
     const id = vaultId.safeParse((req.params as { id: string }).id);
-    const b = z.object({ seriesIds: z.array(z.string().min(1).max(64)).min(1).max(500) }).safeParse(req.body ?? {});
+    const b = z.object({ seriesId: z.string().min(1).max(64) }).safeParse(req.body ?? {});
     if (!id.success) return reply.code(404).send(NOT_FOUND);
     if (!b.success) return bad(reply);
     if (!(await need(req, reply, id.data, 'editor'))) return;
     const ctx = await viewCtxFor(uid(req), roleOf(req));
-    const moved: string[] = [];
-    const skipped: Array<{ id: string; reason: string }> = [];
-    for (const sid of b.data.seriesIds) {
-      const row = await one<{ library_id: string }>('SELECT library_id FROM lib_series WHERE id = $1 AND deleted_at IS NULL', [sid]);
-      if (!row || !(await seriesVisible(sid, ctx))) { skipped.push({ id: sid, reason: 'not_found' }); continue; }
-      if (vaultOf(row.library_id)) { skipped.push({ id: sid, reason: row.library_id === id.data ? 'already_here' : 'in_another_vault' }); continue; }
-      moved.push(sid);
-    }
-    if (moved.length) await q('UPDATE lib_series SET library_id = $2, library_pinned = true WHERE id = ANY($1)', [moved, id.data]);
-    void logAudit('e2e.vault.move', { userId: uid(req), req, detail: { library: id.data, n: moved.length } });
-    void sweepVaults(id.data).catch((e) => req.log.warn(`e2e: sealing failed: ${(e as Error)?.message || e}`));
-    return { applied: moved.length, skipped };
+    if (!(await seriesVisible(b.data.seriesId, ctx))) return reply.code(404).send(NOT_FOUND);
+    const v = await one<{ public_key: string }>('SELECT public_key FROM e2e_vaults WHERE id = $1', [id.data]);
+    if (!v) return reply.code(404).send(NOT_FOUND);
+    try {
+      const job = moveIn({ id: id.data, publicKey: v.public_key }, b.data.seriesId, uid(req));
+      void logAudit('e2e.vault.move_in', { userId: uid(req), req, detail: { vault: id.data } });
+      return reply.code(202).send({ job: job.id });
+    } catch { return reply.code(409).send({ error: 'busy' }); }
   });
 
-  /** Seal now (what the vault page's button and the move above start); answers when the sweep is done. */
-  app.post('/api/e2e/vaults/:id/seal', async (req, reply) => {
-    const id = vaultId.safeParse((req.params as { id: string }).id);
-    if (!id.success) return reply.code(404).send(NOT_FOUND);
-    if (!(await need(req, reply, id.data, 'editor'))) return;
-    const r = await sweepVaults(id.data);
-    return { ...r, status: await sealStatus(id.data) };
+  /** Move an item back out: the browser sends the item key it opened, for this request only. */
+  app.post('/api/e2e/vaults/:id/items/:item/restore', async (req, reply) => {
+    const p = z.object({ id: vaultId, item: uuid }).safeParse(req.params);
+    const b = z.object({ itemKey: z.string().regex(/^[A-Za-z0-9_-]{43}$/) }).safeParse(req.body ?? {});
+    if (!p.success) return reply.code(404).send(NOT_FOUND);
+    if (!b.success) return bad(reply);
+    if (!(await need(req, reply, p.data.id, 'editor'))) return;
+    const item = await one<{ id: string; meta: string }>('SELECT id, meta FROM e2e_vault_items WHERE id = $1 AND vault_id = $2', [p.data.item, p.data.id]);
+    if (!item) return reply.code(404).send(NOT_FOUND);
+    const raw = Buffer.from(b.data.itemKey, 'base64url');
+    try { await openManifest(item, raw); } catch { raw.fill(0); return reply.code(400).send({ error: 'wrong_key' }); }
+    try {
+      const job = moveOut(p.data.id, item, raw, uid(req));
+      void logAudit('e2e.vault.move_out', { userId: uid(req), req, detail: { vault: p.data.id } });
+      return reply.code(202).send({ job: job.id });
+    } catch { raw.fill(0); return reply.code(409).send({ error: 'busy' }); }
+  });
+
+  app.get('/api/e2e/jobs/:job', async (req, reply) => {
+    const j = jobOf(String((req.params as { job: string }).job), uid(req));
+    if (!j) return reply.code(404).send(NOT_FOUND);
+    return { kind: j.kind, state: j.state, done: j.done, total: j.total, error: j.error ?? null };
+  });
+
+  /** An item the caller may read, or a 404 already sent. */
+  async function itemOf(req: FastifyRequest, reply: FastifyReply): Promise<{ vault: string; item: string } | null> {
+    const p = z.object({ id: vaultId, item: uuid }).safeParse(req.params);
+    if (!p.success) { reply.code(404).send(NOT_FOUND); return null; }
+    if (!(await need(req, reply, p.data.id, 'reader'))) return null;
+    if (!(await one('SELECT 1 FROM e2e_vault_items WHERE id = $1 AND vault_id = $2', [p.data.item, p.data.id]))) { reply.code(404).send(NOT_FOUND); return null; }
+    return { vault: p.data.id, item: p.data.item };
+  }
+  /** Ciphertext exactly as stored; the browser opens it. */
+  const cipher = (reply: FastifyReply, b: Buffer) =>
+    reply.header('content-type', 'application/octet-stream').header('cache-control', 'private, max-age=86400').header('x-content-type-options', 'nosniff').send(b);
+
+  app.get('/api/e2e/vaults/:id/items/:item/cover', async (req, reply) => {
+    const it = await itemOf(req, reply);
+    if (!it) return;
+    const b = await readFile(coverPath(it.vault, it.item)).catch(() => null);
+    return b ? cipher(reply, b) : reply.code(404).send(NOT_FOUND);
+  });
+
+  /** One page of a chapter, read by the chapter file's plaintext offset table. Both numbers are 0-based. */
+  app.get('/api/e2e/vaults/:id/items/:item/chapters/:ch/pages/:page', async (req, reply) => {
+    const it = await itemOf(req, reply);
+    if (!it) return;
+    const n = z.object({ ch: z.coerce.number().int().min(0).max(100_000), page: z.coerce.number().int().min(0).max(100_000) }).safeParse(req.params);
+    if (!n.success) return reply.code(404).send(NOT_FOUND);
+    const fh = await open(chapterPath(it.vault, it.item, n.data.ch), 'r').catch(() => null);
+    if (!fh) return reply.code(404).send(NOT_FOUND);
+    try {
+      const head = Buffer.alloc(8);
+      await fh.read(head, 0, 8, 0);
+      const count = head.subarray(0, 4).equals(CHAPTER_MAGIC) ? head.readUInt32BE(4) : 0;
+      if (n.data.page >= count) return reply.code(404).send(NOT_FOUND);
+      const table = Buffer.alloc(8 + (count + 1) * 8);
+      await fh.read(table, 0, table.length, 0);
+      const span = recordSpan(table, n.data.page);
+      if (!span || span.end <= span.start) return reply.code(404).send(NOT_FOUND);
+      const rec = Buffer.alloc(span.end - span.start);
+      await fh.read(rec, 0, rec.length, span.start);
+      return cipher(reply, rec);
+    } finally { await fh.close(); }
+  });
+
+  /** The caller's reading progress in one item, encrypted in their browser under the item key. */
+  app.put('/api/e2e/vaults/:id/items/:item/state', async (req, reply) => {
+    const it = await itemOf(req, reply);
+    if (!it) return;
+    const b = z.object({ sealed: opaque(256 * 1024) }).safeParse(req.body ?? {});
+    if (!b.success) return bad(reply);
+    await q(`INSERT INTO e2e_vault_state (item_id, user_id, sealed) VALUES ($1, $2, $3)
+             ON CONFLICT (item_id, user_id) DO UPDATE SET sealed = EXCLUDED.sealed, updated_at = now()`, [it.item, uid(req), b.data.sealed]);
+    return { ok: true };
   });
 
   // ── Members ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -315,35 +356,31 @@ export default async function e2eRoutes(app: FastifyInstance) {
     if (!p.success) return reply.code(404).send(NOT_FOUND);
     if (!b.success) return bad(reply);
     if (!(await need(req, reply, p.data.id, 'owner'))) return;
-    if (p.data.userId === vaultOf(p.data.id)?.ownerId) return reply.code(409).send({ error: 'is_owner' });
+    if (p.data.userId === uid(req)) return reply.code(409).send({ error: 'is_owner' });
     const target = await one('SELECT 1 FROM e2e_user_keys k JOIN users u ON u.id = k.user_id WHERE k.user_id = $1 AND NOT u.disabled', [p.data.userId]);
     if (!target) return reply.code(404).send({ error: 'no_keys' });
     await q(
-      `INSERT INTO e2e_vault_members (library_id, user_id, role, wrap_alg, wrapped_key, added_by) VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (library_id, user_id) DO UPDATE SET role = EXCLUDED.role, wrap_alg = EXCLUDED.wrap_alg, wrapped_key = EXCLUDED.wrapped_key`,
+      `INSERT INTO e2e_vault_members (vault_id, user_id, role, wrap_alg, wrapped_key, added_by) VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (vault_id, user_id) DO UPDATE SET role = EXCLUDED.role, wrap_alg = EXCLUDED.wrap_alg, wrapped_key = EXCLUDED.wrapped_key`,
       [p.data.id, p.data.userId, b.data.role, b.data.wrapAlg, b.data.wrappedKey, uid(req)]);
-    await loadVaults();
-    void logAudit('e2e.member.put', { userId: uid(req), req, detail: { library: p.data.id, member: p.data.userId, role: b.data.role } });
+    void logAudit('e2e.member.put', { userId: uid(req), req, detail: { vault: p.data.id, member: p.data.userId, role: b.data.role } });
     return { ok: true };
   });
 
   /**
    * Remove a member (the owner), or leave (anyone but the owner). The server stops serving them at once. The vault's
-   * key is not rotated: that would mean re-encrypting every chapter in a browser, and a removed member who copied the
-   * key would also need the server's files to use it.
+   * key is not rotated: a removed member who kept the key would also need the server's files to use it.
    */
   app.delete('/api/e2e/vaults/:id/members/:userId', async (req, reply) => {
     const p = z.object({ id: vaultId, userId: uuid }).safeParse(req.params);
     if (!p.success) return reply.code(404).send(NOT_FOUND);
     const self = p.data.userId === uid(req);
     if (!(await need(req, reply, p.data.id, self ? 'reader' : 'owner'))) return;
-    if (p.data.userId === vaultOf(p.data.id)?.ownerId) return reply.code(409).send({ error: 'is_owner' });
-    await q('DELETE FROM e2e_vault_members WHERE library_id = $1 AND user_id = $2', [p.data.id, p.data.userId]);
-    await loadVaults();
-    void logAudit('e2e.member.remove', { userId: uid(req), req, detail: { library: p.data.id, member: p.data.userId } });
+    const v = await one<{ owner_id: string }>('SELECT owner_id FROM e2e_vaults WHERE id = $1', [p.data.id]);
+    if (p.data.userId === v?.owner_id) return reply.code(409).send({ error: 'is_owner' });
+    await q('DELETE FROM e2e_vault_members WHERE vault_id = $1 AND user_id = $2', [p.data.id, p.data.userId]);
+    await q('DELETE FROM e2e_vault_state s USING e2e_vault_items i WHERE i.id = s.item_id AND i.vault_id = $1 AND s.user_id = $2', [p.data.id, p.data.userId]);
+    void logAudit('e2e.member.remove', { userId: uid(req), req, detail: { vault: p.data.id, member: p.data.userId } });
     return reply.code(204).send();
   });
-
-  /** The caller's vault ids, for the series menu (cheap: from memory). */
-  app.get('/api/e2e/mine', async (req) => ({ vaults: vaultsOf(uid(req)) }));
 }

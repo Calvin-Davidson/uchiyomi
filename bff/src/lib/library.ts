@@ -29,7 +29,6 @@ import { MAX_META_BYTES, EntryTooLarge, zipEntryCapped, regularFiles, readRegula
 // reader, needing only its own page ORDER, while PDF is genuinely different and reads nothing from here.
 import { pdfPages, pdfPageBytes, pdfPageCount, pdfPageDims, pdfPageIndex, pdfPageName } from './readers/pdf';
 import { epubPages } from './readers/epub';
-import { sealedDims } from '../fork/e2e/crypto'; // fork-only: e2e vaults
 
 export const LIBRARY_ROOT = process.env.LIBRARY_ROOT || '/library';
 const IMG = /\.(jpe?g|png|webp|gif|avif)$/i;
@@ -385,7 +384,6 @@ export async function cbzPageAt(
 export async function cbzPageDims(path: string): Promise<Array<{ name: string; width: number | null; height: number | null }>> {
   const out: Array<{ name: string; width: number | null; height: number | null }> = [];
   const dim = async (name: string, bytes: Buffer) => {
-    const sealed = sealedDims(bytes); if (sealed) { out.push({ name, ...sealed }); return; } // fork-only: e2e vault page
     try { const m = await sharp(bytes).metadata(); out.push({ name, width: m.width ?? null, height: m.height ?? null }); }
     catch { out.push({ name, width: null, height: null }); }
   };

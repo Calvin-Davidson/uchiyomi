@@ -63,7 +63,15 @@ test('base64url round-trips any length, and random() fills more than 64 KiB', ()
   assert.ok(C.random(70_000).subarray(66_000).some((x) => x !== 0));
 });
 
-test('only a sealed page is taken for one', () => {
-  assert.equal(C.isSealedPage(new TextEncoder().encode('UYE2\0\0\0\0rest')), true);
-  assert.equal(C.isSealedPage(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0])), false);
+test('an item key sealed to the vault opens its records, bound to the item, chapter and page', async () => {
+  const vault = await C.generateIdentity();
+  const priv = await C.importPrivate(vault.pkcs8);
+  const ITEM = '33333333-3333-4333-8333-333333333333';
+  const raw = C.random(32);
+  const sealed = await C.sealTo(vault.publicSpki, raw, C.ad.itemKey(VAULT, ITEM));
+  const { key } = await C.openItemKey(priv, VAULT, ITEM, sealed);
+  await assert.rejects(C.openItemKey(priv, VAULT, '44444444-4444-4444-8444-444444444444', sealed));
+  const state = await C.sealJson(key, { chapters: { 0: { page: 3 } } }, C.ad.state(ITEM, ALICE));
+  assert.deepEqual(await C.openJson(key, state, C.ad.state(ITEM, ALICE)), { chapters: { 0: { page: 3 } } });
+  await assert.rejects(C.openJson(key, state, C.ad.state(ITEM, BOB)));
 });

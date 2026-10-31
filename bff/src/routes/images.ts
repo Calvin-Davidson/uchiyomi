@@ -36,7 +36,6 @@ import { readTitleLogo } from '../lib/titleArt';
 import { namesOf } from '../lib/altTitles';
 import { HERO_FRAMES, backdropLook, heroFit, type HeroAr } from '../lib/heroFrame';
 import { heroServable, heroFrame, heroVariant, queueHero, type AutoHeroAr } from '../lib/autoHero';
-import { e2eServePage, e2eServeSeriesCover } from '../fork/e2e/serve'; // fork-only: e2e vaults
 
 async function fetchUpstream(path: string): Promise<Buffer> {
   const res = await komgaImage(path);
@@ -670,7 +669,6 @@ export const serveLibSeriesThumb = async (req: FastifyRequest, reply: FastifyRep
   // bookFileAbs now carries for chapters. Without it a hidden series' cover still renders, which is
   // how a deleted series has always kept its thumbnail.
   if (!(await seriesVisible(id, vc(req)))) return reply.code(404).send({ error: 'not_found' });
-  const vaultCover = await e2eServeSeriesCover(req, reply, id, vc(req).userId); if (vaultCover) return vaultCover; // fork-only: e2e vault
   const w = thumbWidth(req);
   const wk = w === 400 ? '' : `:w${w}`; // 400 keeps the legacy cache key so existing entries stay warm
   // admin override wins (uploaded file or pasted URL); variant carries updated_at so edits bust the cache
@@ -811,7 +809,6 @@ export const serveLibBookThumb = async (req: FastifyRequest, reply: FastifyReply
   // warmed book thumbnail" in komgaCompat.int.test.ts sees 200.
   const abs = await bookFileAbs(id, vc(req));
   if (!abs) return reply.code(404).send({ error: 'not_found' });
-  const vaultPage = await e2eServePage(req, reply, id, abs, 1, vc(req).userId); if (vaultPage) return vaultPage; // fork-only: e2e vault
   return serveImage(req, reply, `lib-bthumb:${id}`, async () => {
     const first = await pageOrGone(abs, 0);
     if (!first) throw Object.assign(new Error('empty'), { statusCode: 404 });
@@ -832,7 +829,6 @@ export const serveLibBookThumb = async (req: FastifyRequest, reply: FastifyReply
 export const serveLibBookPage = async (req: FastifyRequest, reply: FastifyReply, id: string, pageNo: number, w: number, fit = 0, tl: string | null = null) => {
   const abs = await bookFileAbs(id, vc(req));
   if (!abs) return reply.code(404).send({ error: 'no_book' });
-  const vaultPage = await e2eServePage(req, reply, id, abs, pageNo, vc(req).userId); if (vaultPage) return vaultPage; // fork-only: e2e vault
   // The reader changes ?cv= after reversible page edits. The disk cache must identify the new bytes too,
   // otherwise a fresh browser URL would still be answered with the old cached page.
   const fileStat = await stat(abs).catch(() => null);

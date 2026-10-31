@@ -13,7 +13,6 @@ import { lineHas, nameKeys } from './authorNames';
 import { pageCleanupMetadata, pageFileVersion } from './pageCleanupFiles';
 import { env } from '../env';
 import path from 'node:path';
-import { vaultsHiddenFrom, withVaults } from '../fork/e2e/vaults'; // fork-only: e2e vaults
 
 interface Page<T> { content: T[]; totalElements: number; totalPages: number; number: number; size: number; first: boolean; last: boolean }
 
@@ -565,8 +564,7 @@ export const owned = {
     );
     // A restricted viewer is told about the libraries they hold, not all of them: the list itself would
     // otherwise leak the existence and names of everything they cannot open.
-    const grants = withVaults(ctx.libraryIds, ctx.userId), hiddenVaults = vaultsHiddenFrom(ctx.userId); // fork-only: e2e vaults
-    const held = (grants ? rows.filter((r) => grants.includes(r.id)) : rows).filter((r) => !hiddenVaults.includes(r.id));
+    const held = ctx.libraryIds ? rows.filter((r) => ctx.libraryIds!.includes(r.id)) : rows;
     // A library rated above this viewer's cap is one they can never open, so naming it is the same leak in
     // a different shape. This list had no notion of the age cap at all, which meant a 13+ account was shown
     // the name of the 18+ shelf and a tab that could only ever be empty.
