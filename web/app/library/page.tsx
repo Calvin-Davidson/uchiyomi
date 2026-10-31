@@ -3,6 +3,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { useShelf } from '@/fork/vaults/shelf'; // fork-only: this page is also the Vault
 import Link from 'next/link';
 import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '@/lib/api';
@@ -54,6 +55,7 @@ import {
 
 function LibraryInner() {
   const params = useSearchParams();
+  const shelf = useShelf(); // fork-only
   const router = useRouter();
   const { isAdmin, user, status: authStatus, setSettings } = useAuth();
   const validSort = (v: unknown): v is string => typeof v === 'string' && SORTS.some((s) => s.key === v);
@@ -76,7 +78,7 @@ function LibraryInner() {
   const genres = (params.get('genres') || '').split(',').filter(Boolean);
   // Which library, or '' for all of them. This lists only what the viewer may open -- the endpoint filters
   // by their grants -- so the tab row doubles as an honest answer to "what do I actually have access to".
-  const lib = params.get('lib') || '';
+  const lib = shelf.lib ?? (params.get('lib') || ''); // fork-only
   const src = params.get('src') || '';
   const anysrc = params.get('anysrc') || '';
   // "Search your library" (v0.60.0): the toolbar's field, a title filter the server applies with everything else.
@@ -93,8 +95,8 @@ function LibraryInner() {
   // An 18+ library's own tab goes with its contents: leaving it there while the grid it opens is empty is
   // worse than not offering it, and the toggle beside the sorts is what brings both back.
   const libs = useMemo(
-    () => (allLibs ?? []).filter((l) => adultOn || !l.adult),
-    [allLibs, adultOn],
+    () => (shelf.lib ? [] : (allLibs ?? []).filter((l) => adultOn || !l.adult)), // fork-only
+    [allLibs, adultOn, shelf.lib],
   );
   const [sheet, setSheet] = useState(false);
   // The phone's Sort sheet (v0.60.0), the page's like the Filters sheet: from lg up the Sort key opens a menu instead.
@@ -165,7 +167,7 @@ function LibraryInner() {
     // `folder` points one arrival at a tile in Downloads ("Open in library" on an add still downloading its
     // first chapter). Any change made on the page has moved on from it.
     next.delete('folder');
-    router.replace(`/library?${next.toString()}`);
+    router.replace(`${shelf.base}?${next.toString()}`); // fork-only
     if (k === 'sort' && validSort(v)) saveOrder(v, naturalDir(SORTS.find((s) => s.key === v)!));
     else if (k === 'dir' && validDir(v)) saveOrder(sortKey, v);
   };
@@ -197,7 +199,7 @@ function LibraryInner() {
     // v0.61.0: the smart list this shelf was opened from (its Edit filters) stays, so filters cleared and chosen again
     // can still Update it.
     if (params.get('list')) n.set('list', params.get('list')!);
-    router.replace(`/library?${n.toString()}`);
+    router.replace(`${shelf.base}?${n.toString()}`); // fork-only
   };
 
   const condition = useMemo(() => conditionFrom(read, status, genres, lib, src, anysrc, author), [read, status, genres.join(','), lib, src, anysrc, author]);
@@ -580,7 +582,7 @@ function LibraryInner() {
         {/* The title gives way before the keys do: with the admin's import a fourth round key, "Bibliothèque" and
             "Библиотека" pushed the row 25-29 px past a 320 px screen. */}
         <div className="flex items-center justify-between gap-3 lg:pt-6">
-          <h1 className="min-w-0 truncate font-display text-2xl font-bold tracking-tight lg:text-3xl">{tr('Library')}</h1>
+          <h1 className="min-w-0 truncate font-display text-2xl font-bold tracking-tight lg:text-3xl">{shelf.title ?? tr('Library')}</h1>{/* fork-only */}
           <div className="flex shrink-0 items-center gap-2">
             {/* v0.55.4 (#158): the import, for an admin, where "+" and the top bar's Discover add series -- it was four
                 taps deep in Admin → Sources. A labelled key on a wide screen; on a phone a round key among the others. */}
@@ -653,7 +655,7 @@ function LibraryInner() {
                 {tr(dirLabel(active, dir))} ×
               </button>
             )}
-            {lib && (
+            {lib && !shelf.lib && ( // fork-only
               <button onClick={() => setParam('lib', '')} className="chip text-xs">
                 {libs.find((l) => l.id === lib)?.name || lib} ×
               </button>

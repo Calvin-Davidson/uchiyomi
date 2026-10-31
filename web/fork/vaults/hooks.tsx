@@ -66,7 +66,7 @@ export function useVaultMenu(series: Series, settle: () => void): Array<{ label:
   const done = () => { resetWorker(); settle(); void qc.invalidateQueries(); };
   const home = data?.vaults.find((v) => v.id === series.libraryId);
   if (home) {
-    if (home.role === 'reader' || !user) return [];
+    if (!user) return [];
     return [{
       label: 'Move out of vault',
       onSelect: async () => {
@@ -86,9 +86,10 @@ Its chapters are decrypted on the server and written back to the library as a ne
       },
     }];
   }
-  const vaults = (data?.vaults ?? []).filter((v) => v.role !== 'reader');
-  return vaults.map((v, i) => ({
-    label: vaults.length > 1 ? `Move to vault ${i + 1}` : 'Move to vault',
+  const v = data?.vaults[0]; // one vault per account
+  if (!v) return [];
+  return [{
+    label: 'Move to vault',
     onSelect: async () => {
       if (!window.confirm(`Move “${name}” into your vault?
 
@@ -101,5 +102,5 @@ It is encrypted (title, details, chapters, your progress) and then removed from 
         done();
       } catch (e) { toast(`Could not move it to the vault${(e as Error)?.message ? `: ${(e as Error).message}` : ''}`, 'error'); }
     },
-  }));
+  }];
 }

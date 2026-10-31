@@ -8,6 +8,7 @@ import { Img } from '@/components/ui';
 import { IcCheck, IcChevronRight } from '@/components/icons';
 import { SourceIcon } from '@/components/SourcePicker';
 import { keys, t as tr } from '@/lib/i18n';
+import { useShelf } from '@/fork/vaults/shelf'; // fork-only: e2e vault
 
 /**
  * Every way to narrow the library, in one place, as labelled sections.
@@ -270,7 +271,7 @@ export function LibraryFilters({ read, status, genres, lib, libs, mainSrc, anySr
   onSet: (k: string, v: string) => void;
 }) {
   const { data: counted } = useLibrarySources();
-  const sources = counted?.sources ?? [];
+  const sources = useShelf().lib ? [] : counted?.sources ?? []; // fork-only: the Vault's series have no sources
   const none = counted?.none ?? 0;
   const [q, setQ] = useState('');
   const [showAll, setShowAll] = useState(false);
