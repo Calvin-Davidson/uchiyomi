@@ -279,17 +279,55 @@
     const v = await current();
     if (!v || !body || !JSON.stringify(body.condition || {}).includes(`"${v.id}"`)) return fetch(req);
     const q = String(body.query || body.search || '').trim().toLowerCase();
-    let all = [...v.items.values()].filter((it) => !q || it.manifest.title.toLowerCase().includes(q)).map((it) => seriesDto(v, it));
+    let all = [...v.items.values()].filter((it) => !q || it.manifest.title.toLowerCase().includes(q)).map((it) => seriesDto(v, it))
+      .filter((s) => matches(body.condition, s));
     const sort = String(body.sort || '');
-    if (/created|added|new/i.test(sort)) all.sort((a, b) => b.created.localeCompare(a.created));
+    if (/^unread/i.test(sort)) all.sort((a, b) => b.booksUnreadCount - a.booksUnreadCount);
+    else if (/^chapters/i.test(sort)) all.sort((a, b) => b.booksCount - a.booksCount);
+    else if (/created|added|new/i.test(sort)) all.sort((a, b) => b.created.localeCompare(a.created));
     else if (/read/i.test(sort)) all.sort((a, b) => (b.lastReadAt || '').localeCompare(a.lastReadAt || ''));
     else all.sort((a, b) => a.name.localeCompare(b.name));
-    if (/desc/i.test(sort) && !/created|added|new|read/i.test(sort)) all.reverse();
+    if (/desc/i.test(sort) && !/created|added|new|read|chapters/i.test(sort)) all.reverse();
     return json(page(all, Number(body.page) || 0, Number(body.size) || 40));
   }
 
-  // For web/test/vaultWorker.test.ts: the shapes, checked against web/lib/types.ts.
-  self.__uchiyomiVaultShapes = { seriesDto, bookDto, pageDto, page, parse };
+  /** A name compared as the Library's "by this author" compares it: whole, ignoring case and accents. */
+  const fold = (s) => String(s).normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+  /**
+   * Whether a vault series (as seriesDto builds it) passes the Library's condition tree, leaf for leaf as the server's
+   * condSqlOf (bff/src/lib/ownedCatalog.ts) reads it. Vault series have no sources, so a source filter keeps none of them
+   * and "No source" keeps them all. A leaf it does not know keeps everything rather than emptying the shelf.
+   */
+  function matches(c, s) {
+    if (!c || typeof c !== 'object') return true;
+    if (Array.isArray(c.allOf)) return c.allOf.every((x) => matches(x, s));
+    if (Array.isArray(c.anyOf)) return !c.anyOf.length || c.anyOf.some((x) => matches(x, s));
+    const [key] = Object.keys(c);
+    const leaf = c[key] || {};
+    const val = leaf.value == null ? '' : String(leaf.value);
+    const m = s.metadata;
+    let hit;
+    if (key === 'libraryId') hit = s.libraryId === val;
+    else if (key === 'genre') hit = (m.genres || []).some((g) => g.toLowerCase() === val.toLowerCase());
+    else if (key === 'status') hit = (m.status || '').toLowerCase() === val.toLowerCase();
+    else if (key === 'author') hit = (m.author || '').toLowerCase().includes(val.toLowerCase());
+    else if (key === 'authorName') hit = (m.author || '').split(/[,;/&]/).some((n) => fold(n) && fold(n) === fold(val));
+    else if (key === 'readStatus') {
+      const done = s.booksReadCount, started = s.booksInProgressCount, n = s.booksCount;
+      const r = val.toUpperCase();
+      hit = r === 'UNREAD' ? done === 0 && started === 0
+        : r === 'IN_PROGRESS' ? started > 0 || (done > 0 && done < n)
+        : r === 'READ' ? n > 0 && done >= n
+        : true;
+    } else if (key === 'mainSource' || key === 'anySource') hit = false;
+    else if (key === 'hasMainSource') return leaf.operator === 'isFalse';
+    else return true;
+    return leaf.operator === 'isNot' ? !hit : hit;
+  }
+
+  // For web/test/vaultWorker.test.ts: the shapes and the filter, checked against web/lib/types.ts and the server's rules.
+  self.__uchiyomiVaultShapes = { seriesDto, bookDto, pageDto, page, parse, matches };
 
   self.addEventListener('fetch', (e) => {
     const req = e.request;

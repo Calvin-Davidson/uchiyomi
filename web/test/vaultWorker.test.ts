@@ -7,6 +7,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import vm from 'node:vm';
 import type { Book, Page, PageInfo, Series } from '../lib/types';
+import { conditionFrom } from '../lib/libraryQuery';
+import { NO_SOURCE } from '../components/LibraryFilters';
 
 const ITEM = '33333333-3333-4333-8333-333333333333';
 
@@ -20,6 +22,7 @@ function shapes() {
     seriesDto: (v: unknown, it: unknown) => Series; bookDto: (it: unknown, ch: number) => Book;
     pageDto: (it: unknown, ch: number) => PageInfo[]; page: <T>(all: T[], n: number, size: number) => Page<T>;
     parse: (id: string) => { item: string; ch: number | null } | null;
+    matches: (condition: unknown, s: Series) => boolean;
   };
 }
 
@@ -58,4 +61,28 @@ test('its chapters and pages carry ids the worker can read back, with progress a
   const pg: Page<number> = S.page([1, 2, 3], 1, 2);
   assert.deepEqual(pg, { content: [3], totalElements: 3, totalPages: 2, number: 1, size: 2, first: false, last: true });
   assert.equal(S.parse('s_real_series'), null);
+});
+
+test("the Library's filters narrow the Vault as the server narrows the Library", () => {
+  const S = shapes();
+  const VAULT = 'vault_0123456789abcdef';
+  const at = (chapters: Record<number, { completed: boolean }>) => S.seriesDto({ id: VAULT }, {
+    ...item, manifest: { ...item.manifest, author: 'Kim Jung-gi, Léa Roux' },
+    state: { chapters: Object.fromEntries(Object.entries(chapters).map(([k, c]) => [k, { page: 1, at: '2026-10-02T00:00:00.000Z', ...c }])) },
+  });
+  const fresh = at({});
+  const reading = at({ 0: { completed: true } });
+  const finished = at({ 0: { completed: true }, 1: { completed: true } });
+  // What the aside sends: conditionFrom(read, status, genres, lib, src, anysrc, author).
+  const keeps = (s: Series, read = '', status = '', genres: string[] = [], src = '', anysrc = '', author = '') =>
+    S.matches(conditionFrom(read, status, genres, VAULT, src, anysrc, author), s);
+  assert.deepEqual([fresh, reading, finished].map((s) => keeps(s, 'UNREAD')), [true, false, false]);
+  assert.deepEqual([fresh, reading, finished].map((s) => keeps(s, 'IN_PROGRESS')), [false, true, false]);
+  assert.deepEqual([fresh, reading, finished].map((s) => keeps(s, 'READ')), [false, false, true]);
+  assert.ok(keeps(fresh, '', 'ongoing') && !keeps(fresh, '', 'ENDED'));
+  assert.ok(keeps(fresh, '', '', ['drama']) && !keeps(fresh, '', '', ['Drama', 'Comedy']));
+  assert.ok(keeps(fresh, '', '', [], '', '', 'lea roux') && !keeps(fresh, '', '', [], '', '', 'Roux'));
+  // No sources: a source filter keeps none of them, "No source" all of them.
+  assert.ok(!keeps(fresh, '', '', [], 'mangadex') && !keeps(fresh, '', '', [], '', 'mangadex') && keeps(fresh, '', '', [], NO_SOURCE));
+  assert.ok(keeps(fresh) && !S.matches(conditionFrom('', '', [], 'vault_ffffffffffffffff'), fresh));
 });
