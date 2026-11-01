@@ -12,7 +12,7 @@ import { IcLock } from '@/components/icons';
 import { useToast } from '@/components/Toast';
 import { t as tr } from './i18n';
 import type { Series } from './types';
-import { deviceUnlocked, fetchStatus, moveToVault, resetWorker, restoreItem, vaultDetail, waitForJob, type VaultStatus } from './vault';
+import { deviceUnlocked, fetchStatus, isVaultSeries, moveToVault, resetWorker, restoreItem, vaultDetail, waitForJob, type VaultStatus } from './vault';
 
 export const STATUS_KEY = ['e2e-status'] as const;
 
@@ -76,7 +76,7 @@ export function useVaultMenu(series: Series, settle: () => void): Array<{ label:
   const name = series.metadata?.title || series.name;
   const why = (e: unknown) => ((e as Error)?.message ? `: ${(e as Error).message}` : '');
   const done = () => { resetWorker(); settle(); void qc.invalidateQueries(); };
-  const home = data?.vaults.find((v) => v.id === series.libraryId);
+  const home = isVaultSeries(series.id) ? data?.vaults.find((v) => v.id === series.libraryId) : undefined;
   if (home) {
     if (!user) return [];
     return [{

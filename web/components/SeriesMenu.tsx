@@ -11,6 +11,7 @@ import { useContextMenu, type MenuItem } from './ContextMenu';
 import { useArchiveEnqueue } from './ArchiveQueue';
 import { MoveToLibrary } from './MoveToLibrary';
 import { useVaultMenu } from '@/lib/useVault';
+import { isVaultSeries } from '@/lib/vault';
 
 /**
  * A series card's menu (#100): the few things worth doing without opening the series, from wherever it is on
@@ -30,6 +31,9 @@ export function useSeriesMenu(series: Series) {
   const offline = status === 'offline';
   const href = `/series/?id=${encodeURIComponent(series.id)}`;
   const favourite = !!series.yomi?.favorite;
+  // A vault series is not on the server: of what follows, only its read state (which the service worker keeps) and
+  // moving it back out apply to it.
+  const inVault = isVaultSeries(series.id);
 
   // ['collection']: a list's tiles carry the same badges since v0.55.7 (#164), and Mark all read from one of them must
   // move its count there too, not only on the Library.
@@ -60,13 +64,13 @@ export function useSeriesMenu(series: Series) {
         catch { toast(tr('Could not copy the link'), 'error'); }
       },
     },
-    {
+    ...(!inVault ? [{
       label: favourite ? tr('Remove from favourites') : tr('Favourite'), divider: true, disabled: offline,
       onSelect: () => bulk('/api/favorites/bulk', { favorite: !favourite }, favourite ? tr('Removed from favourites') : tr('Added to favourites')),
-    },
-    { label: tr('Mark all read'), disabled: offline, onSelect: () => bulk('/api/library/bulk/read', { completed: true }, tr('Marked read')) },
+    }] : []),
+    { label: tr('Mark all read'), divider: inVault, disabled: offline, onSelect: () => bulk('/api/library/bulk/read', { completed: true }, tr('Marked read')) },
     { label: tr('Mark all unread'), disabled: offline, onSelect: () => bulk('/api/library/bulk/read', { completed: false }, tr('Marked unread')) },
-    ...(isAdmin ? [{
+    ...(isAdmin && !inVault ? [{
       label: tr('Check for new chapters'), divider: true, disabled: offline,
       onSelect: async () => {
         try {
@@ -75,10 +79,10 @@ export function useSeriesMenu(series: Series) {
         } catch { toast(tr('Could not do that'), 'error'); }
       },
     }] : []),
-    ...(isAdmin ? [{ label: tr('Move library'), disabled: offline, onSelect: () => setMoving(true) }] : []),
+    ...(isAdmin && !inVault ? [{ label: tr('Move library'), disabled: offline, onSelect: () => setMoving(true) }] : []),
     ...vaultItems.map((v) => ({ ...v, disabled: offline })),
     // What is missing is the server's to work out; the notice says when there was nothing older to fetch.
-    ...(canDownload(user) ? [{
+    ...(canDownload(user) && !inVault ? [{
       label: tr('Archive slowly'), divider: !isAdmin, disabled: offline,
       onSelect: () => { void archive([series.id], series.metadata?.title || series.name); },
     }] : []),

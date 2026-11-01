@@ -21,6 +21,9 @@ interface Job { kind: 'in' | 'out'; state: 'running' | 'done' | 'failed'; done: 
 
 const enc = encodeURIComponent;
 
+/** A series that lives in a vault: the service worker (public/vault-sw.js) answers for it, under ids it made up. */
+export const isVaultSeries = (id: string): boolean => id.startsWith('vlt-');
+
 /** The server's refusal code (`{ error }`), for an ApiError. */
 export function errorCode(e: unknown): string | null {
   if (!(e instanceof ApiError)) return null;

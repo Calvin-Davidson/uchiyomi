@@ -9,6 +9,7 @@
  *   GET  /api/series/vlt-<item>[/books]     a vault series and its chapters, with this member's progress
  *   GET  /api/books/vlt-<item>~<ch>[/pages] a chapter and its pages
  *   PUT  /api/books/vlt-…/progress          progress, encrypted here and stored with /api/e2e
+ *   POST /api/library/bulk/read             Mark all read / unread, for the vault series in it
  *   GET  /img/series|books/vlt-…            covers, chapter thumbnails, pages (decrypted)
  *   anything else about a vault series      an empty answer (GET) or 403 (a write the server can't do on ciphertext)
  *
@@ -222,6 +223,52 @@
     return json(EMPTY[sub] || { content: [] });
   }
 
+  /** This member's progress in an item, sealed here under the item key and stored with /api/e2e. */
+  async function saveState(v, it) {
+    const sealed = await sealString(it.key, enc.encode(JSON.stringify(it.state)), AD.state(it.row.id, userId));
+    await e2e(`/api/e2e/vaults/${encodeURIComponent(v.id)}/items/${encodeURIComponent(it.row.id)}/state`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sealed }),
+    });
+  }
+
+  /**
+   * Mark all read / unread (POST /api/library/bulk/read, the series menu's and the Library's select bar's), for the
+   * vault series in it: read is every chapter finished, keeping the page reached; unread is no progress at all, as the
+   * server does it. Any other series go on to the server, and the two answers are summed in its shape.
+   */
+  async function bulkRead(req) {
+    const body = await req.clone().json().catch(() => null);
+    const ids = body && Array.isArray(body.seriesIds) ? body.seriesIds.map(String) : [];
+    const mine = ids.filter((id) => id.startsWith(PREFIX));
+    if (!mine.length) return fetch(req);
+    const v = await current();
+    let applied = 0;
+    const skipped = [];
+    for (const id of mine) {
+      const p = parse(id);
+      const it = p && v && v.items.get(p.item);
+      if (!it) { skipped.push({ id, reason: 'not_found' }); continue; }
+      if (body.completed) {
+        const at = new Date().toISOString();
+        it.manifest.chapters.forEach((c, i) => {
+          const was = it.state.chapters[i];
+          it.state.chapters[i] = { page: Math.max(was ? was.page : 0, c.pages.length), completed: true, at };
+        });
+      } else it.state.chapters = {};
+      await saveState(v, it);
+      applied++;
+    }
+    const rest = ids.filter((id) => !id.startsWith(PREFIX));
+    if (rest.length) {
+      const res = await fetch(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify({ ...body, seriesIds: rest }), credentials: 'include' });
+      if (!res.ok) return res;
+      const r = await res.json().catch(() => ({}));
+      applied += Number(r.applied) || 0;
+      skipped.push(...(r.skipped || []));
+    }
+    return json({ ok: true, applied, skipped });
+  }
+
   async function bookApi(req, id, sub) {
     const p = parse(id);
     const v = await current();
@@ -230,11 +277,12 @@
     if (sub === 'progress' && req.method === 'PUT') {
       const body = await req.json().catch(() => ({}));
       const total = it.manifest.chapters[p.ch].pages.length;
-      it.state.chapters[p.ch] = { page: Number(body.page) || 0, completed: !!body.completed || (total > 0 && Number(body.page) >= total), at: new Date().toISOString() };
-      const sealed = await sealString(it.key, enc.encode(JSON.stringify(it.state)), AD.state(it.row.id, userId));
-      await e2e(`/api/e2e/vaults/${encodeURIComponent(v.id)}/items/${encodeURIComponent(it.row.id)}/state`, {
-        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sealed }),
-      });
+      const page = Number(body.page) || 0;
+      const completed = !!body.completed || (total > 0 && page >= total);
+      // Unread is no progress at all, as the server's bulk unread deletes it: a page-0 entry would read as started.
+      if (!completed && page <= 0) delete it.state.chapters[p.ch];
+      else it.state.chapters[p.ch] = { page, completed, at: new Date().toISOString() };
+      await saveState(v, it);
       return json({ ok: true });
     }
     if (req.method !== 'GET') return json({ error: 'vault_series' }, 403);
@@ -338,6 +386,7 @@
     let m;
     if ((m = /^\/api\/series\/(vlt-[^/]+)(?:\/([^/]+))?\/?$/.exec(path))) return e.respondWith(seriesApi(req, m[1], m[2] || null, url).catch(() => NOT_FOUND()));
     if ((m = /^\/api\/books\/(vlt-[^/]+)(?:\/([^/]+))?\/?$/.exec(path))) return e.respondWith(bookApi(req, m[1], m[2] || null).catch(() => NOT_FOUND()));
+    if (path === '/api/library/bulk/read' && req.method === 'POST') return e.respondWith(bulkRead(req).catch(() => json({ error: 'vault_series' }, 500)));
     if (/^\/api\/(bookmarks|notes)\/?$/.test(path) && (url.searchParams.get('seriesId') || '').startsWith(PREFIX)) return e.respondWith(json({ content: [] }));
     if ((m = /^\/img\/series\/(vlt-[^/]+)\/thumb\/?$/.exec(path))) return e.respondWith(image(m[1], 'cover').catch(() => new Response(null, { status: 404 })));
     if ((m = /^\/img\/books\/(vlt-[^/]+)\/thumb\/?$/.exec(path))) return e.respondWith(image(m[1], 'thumb').catch(() => new Response(null, { status: 404 })));

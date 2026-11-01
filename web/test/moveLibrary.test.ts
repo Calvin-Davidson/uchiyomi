@@ -28,7 +28,7 @@ test('the series page and the card menu file the series through the single-serie
     assert.match(read(f), /api\(`\/api\/admin\/series\/\$\{encodeURIComponent\((id|series\.id)\)\}\/library`, \{ json: \{ libraryId \} \}\)/, `${f} does not post the library`);
     assert.match(read(f), /<MoveToLibrary n=\{1\}/, `${f} does not open the picker`);
   }
-  assert.match(read('components/SeriesMenu.tsx'), /isAdmin \? \[\{ label: tr\('Move library'\)/, "a member's card menu offers Move library");
+  assert.match(read('components/SeriesMenu.tsx'), /isAdmin && !inVault \? \[\{ label: tr\('Move library'\)/, "a member's card menu offers Move library");
   assert.match(read('app/series/page.tsx'), /case 'move': setMoving\(true\); break;/);
 });
 
