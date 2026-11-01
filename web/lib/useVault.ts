@@ -3,13 +3,14 @@
 //   useVaultNav()   components/Sidebar.tsx      -- "Vault" under Library
 //   useVaultMenu()  components/SeriesMenu.tsx   -- "Move to vault" / "Move out of vault" on a series card
 //   useShelf()      app/library/page.tsx, components/LibraryFilters.tsx -- the Library page run as the Vault at /vault
-// Each answers nothing when the server has no vaults (VAULTS unset). The vault's own words are English only.
+// Each answers nothing when the server has no vaults (VAULTS unset).
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from './auth';
 import { IcLock } from '@/components/icons';
 import { useToast } from '@/components/Toast';
+import { t as tr } from './i18n';
 import type { Series } from './types';
 import { deviceUnlocked, fetchStatus, moveToVault, resetWorker, restoreItem, vaultDetail, waitForJob, type VaultStatus } from './vault';
 
@@ -55,13 +56,14 @@ export function useShelf(): Shelf {
   const path = usePathname() || '';
   const { data } = useVaultStatus();
   if (!path.startsWith('/vault')) return { base: '/library', title: null, lib: null };
-  return { base: '/vault/', title: 'Vault', lib: data?.vaults[0]?.id ?? 'vault' };
+  return { base: '/vault/', title: tr('Vault'), lib: data?.vaults[0]?.id ?? 'vault' };
 }
 
 /** The Sidebar's item: the Vault, which is the Library filtered to it (or the unlock, until this device has the key). */
 export function useVaultNav(): { href: string; label: string; Icon: typeof IcLock; match: (p: string) => boolean } | null {
   const { data } = useVaultStatus();
   if (!data?.enabled || (!data.vaults.length && !data.passwordAccount)) return null;
+  // Sidebar says its items' labels through tr().
   return { href: '/vault/', label: 'Vault', Icon: IcLock, match: (p) => p.startsWith('/vault') };
 }
 
@@ -72,44 +74,45 @@ export function useVaultMenu(series: Series, settle: () => void): Array<{ label:
   const qc = useQueryClient();
   const toast = useToast();
   const name = series.metadata?.title || series.name;
+  const why = (e: unknown) => ((e as Error)?.message ? `: ${(e as Error).message}` : '');
   const done = () => { resetWorker(); settle(); void qc.invalidateQueries(); };
   const home = data?.vaults.find((v) => v.id === series.libraryId);
   if (home) {
     if (!user) return [];
     return [{
-      label: 'Move out of vault',
+      label: tr('Move out of vault'),
       onSelect: async () => {
-        if (!window.confirm(`Move “${name}” out of the vault?
+        if (!window.confirm(`${tr('Move “{name}” out of the vault?', { name })}
 
-Its chapters are decrypted on the server and written back to the library as a new series. Progress you made in the vault is not carried over.`)) return;
+${tr('Its chapters are decrypted on the server and written back to the library as a new series. Progress you made in the vault is not carried over.')}`)) return;
         try {
           const itemId = series.id.replace(/^vlt-/, '');
           const row = (await vaultDetail(home.id)).items.find((i) => i.id === itemId);
           if (!row) throw new Error('not found');
           const job = await restoreItem(user.id, home, row);
-          toast(`Decrypting “${name}”…`, 'success');
+          toast(tr('Decrypting “{name}”…', { name }), 'success');
           await waitForJob(job);
-          toast(`“${name}” is back in the library.`, 'success');
+          toast(tr('“{name}” is back in the library.', { name }), 'success');
           done();
-        } catch (e) { toast(`Could not move it out${(e as Error)?.message ? `: ${(e as Error).message}` : ''}`, 'error'); }
+        } catch (e) { toast(tr('Could not move it out') + why(e), 'error'); }
       },
     }];
   }
   const v = data?.vaults[0]; // one vault per account
   if (!v) return [];
   return [{
-    label: 'Move to vault',
+    label: tr('Move to vault'),
     onSelect: async () => {
-      if (!window.confirm(`Move “${name}” into your vault?
+      if (!window.confirm(`${tr('Move “{name}” into your vault?', { name })}
 
-It is encrypted (title, details, chapters, your progress) and then removed from the library, so only you can read it. You can move it back out from its menu in the Vault.`)) return;
+${tr('It is encrypted (title, details, chapters, your progress) and then removed from the library, so only you can read it. You can move it back out from its menu in the Vault.')}`)) return;
       try {
         const { job } = await moveToVault(v.id, series.id);
-        toast(`Encrypting “${name}”…`, 'success');
+        toast(tr('Encrypting “{name}”…', { name }), 'success');
         await waitForJob(job);
-        toast(`“${name}” is in your vault.`, 'success');
+        toast(tr('“{name}” is in your vault.', { name }), 'success');
         done();
-      } catch (e) { toast(`Could not move it to the vault${(e as Error)?.message ? `: ${(e as Error).message}` : ''}`, 'error'); }
+      } catch (e) { toast(tr('Could not move it to the vault') + why(e), 'error'); }
     },
   }];
 }
