@@ -1,7 +1,7 @@
-/* Fork-only: shows vault series in the ordinary Library, series page and reader, decrypted inside the service worker.
+/* Shows vault series (docs/VAULTS.md) in the ordinary Library, series page and reader, decrypted inside the service worker.
  *
  * Loaded by one `importScripts` line at the top of sw.js, so its fetch listener runs first. A series in a vault is not in
- * the server's library (bff/src/fork/vaults/move.ts): the server only holds ciphertext. This worker opens it with the key
+ * the server's library (bff/src/lib/vaults.ts): the server only holds ciphertext. This worker opens it with the key
  * this device holds, and answers the app's own API calls for it in the shapes the server would use (web/lib/types.ts):
  *
  *   GET  /api/libraries                     the real list, plus "Vault"
@@ -12,8 +12,8 @@
  *   GET  /img/series|books/vlt-…            covers, chapter thumbnails, pages (decrypted)
  *   anything else about a vault series      an empty answer (GET) or 403 (a write the server can't do on ciphertext)
  *
- * Keys: this device's member private key is in IndexedDB (`uchiyomi-e2e` / `device`, web/fork/vaults/device.ts) under a
- * non-extractable device key. Formats must match web/fork/vaults/crypto.ts and bff/src/fork/vaults/crypto.ts.
+ * Keys: this device's member private key is in IndexedDB (`uchiyomi-e2e` / `device`, web/lib/vault.ts) under a
+ * non-extractable device key. Formats must match web/lib/vaultCrypto.ts and bff/src/lib/vaultCrypto.ts.
  */
 (() => {
   const EC = { name: 'ECDH', namedCurve: 'P-256' };
@@ -97,7 +97,7 @@
   }
 
   // ── The vault, opened: one per worker, reloaded when the page says it changed or it is a minute old ─────────────
-  let vault = null;      // { id, role, items: Map<itemId, Item>, at }
+  let vault = null;      // { id, items: Map<itemId, Item>, at }
   let loading = null;
   const ITEM_TTL = 60_000;
 
@@ -127,7 +127,7 @@
         items.set(row.id, { row, key, manifest, state });
       } catch { /* an item that does not open is left out */ }
     }));
-    return { id: ref.id, role: ref.role, items, at: Date.now() };
+    return { id: ref.id, items, at: Date.now() };
   }
   let tried = 0;
   function current(fresh = false) {
@@ -288,7 +288,7 @@
     return json(page(all, Number(body.page) || 0, Number(body.size) || 40));
   }
 
-  // For web/test/e2eWorker.test.ts: the shapes, checked against web/lib/types.ts.
+  // For web/test/vaultWorker.test.ts: the shapes, checked against web/lib/types.ts.
   self.__uchiyomiVaultShapes = { seriesDto, bookDto, pageDto, page, parse };
 
   self.addEventListener('fetch', (e) => {

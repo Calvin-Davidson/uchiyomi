@@ -2204,6 +2204,67 @@ ALTER TABLE series_art ADD COLUMN IF NOT EXISTS rev integer NOT NULL DEFAULT 0;
 -- 1 is v0.55.7's, under which every link stored before was checked; below the current rule, the next background pass
 -- holds every automatic link to it once, checked or not.
 ALTER TABLE server_settings ADD COLUMN IF NOT EXISTS match_check_rule smallint NOT NULL DEFAULT 1;
+
+-- End-to-end encrypted vaults (VAULTS=1; routes/vaults.ts, docs/VAULTS.md). Created whether or not the switch is on, so
+-- turning it on later needs nothing else. The server holds public keys and ciphertext only:
+--   e2e_user_keys      an account's public key (ECDH P-256, SPKI)
+--   e2e_key_wraps      its private key, wrapped in the browser by a key derived from the account password
+--   e2e_vaults         a vault's public key; e2e_vault_members its private key, sealed to each member's public key
+--   e2e_vault_items    one series moved in: its item key sealed to the vault, and its manifest encrypted under that key
+--                      (chapter files and cover under CONFIG_DIR/e2e-vault/<vault>/<item>/)
+--   e2e_vault_state    a member's reading progress in an item, encrypted under the item key in their browser
+CREATE TABLE IF NOT EXISTS e2e_user_keys (
+  user_id    uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  alg        text NOT NULL,
+  public_key text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS e2e_key_wraps (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      uuid NOT NULL REFERENCES e2e_user_keys(user_id) ON DELETE CASCADE,
+  kind         text NOT NULL,
+  label        text NOT NULL DEFAULT '',
+  params       jsonb NOT NULL DEFAULT '{}'::jsonb,
+  wrapped      text NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS e2e_key_wraps_user_idx ON e2e_key_wraps (user_id);
+CREATE TABLE IF NOT EXISTS e2e_vaults (
+  id          text PRIMARY KEY,
+  owner_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  alg         text NOT NULL,
+  public_key  text NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS e2e_vault_members (
+  vault_id    text NOT NULL REFERENCES e2e_vaults(id) ON DELETE CASCADE,
+  user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role        text NOT NULL CHECK (role IN ('owner', 'editor', 'reader')),
+  wrap_alg    text NOT NULL,
+  wrapped_key text NOT NULL,
+  added_by    uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (vault_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS e2e_vault_members_user_idx ON e2e_vault_members (user_id);
+CREATE TABLE IF NOT EXISTS e2e_vault_items (
+  id          uuid PRIMARY KEY,
+  vault_id    text NOT NULL REFERENCES e2e_vaults(id) ON DELETE CASCADE,
+  item_key    text NOT NULL,
+  meta        text NOT NULL,
+  chapters    int NOT NULL,
+  bytes       bigint NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS e2e_vault_items_vault_idx ON e2e_vault_items (vault_id);
+CREATE TABLE IF NOT EXISTS e2e_vault_state (
+  item_id     uuid NOT NULL REFERENCES e2e_vault_items(id) ON DELETE CASCADE,
+  user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  sealed      text NOT NULL,
+  updated_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (item_id, user_id)
+);
 `;
 
 // Serialises migrate() across processes. CREATE TABLE IF NOT EXISTS is not safe to run concurrently:

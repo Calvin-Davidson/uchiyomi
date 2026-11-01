@@ -1,8 +1,11 @@
-# Vault: end-to-end encrypted series (fork only)
+# Vault: end-to-end encrypted series
 
 The vault is a private shelf you move finished downloads into. Once a series is in it, everything about it is
 encrypted: title, details, chapter list, cover, pages, and each member's reading progress. The server stores it but
 can't read it. Your browser opens it.
+
+Vaults are off unless the server sets `VAULTS=1` (in `.env`, or the app container's environment). Off, `/api/e2e` is
+not registered and the web app shows no Vault; the tables are created either way, so turning it on needs nothing else.
 
 ## Using it
 
@@ -11,7 +14,7 @@ can't read it. Your browser opens it.
 3. On its card choose **Move to vault**. The server encrypts it and then removes it from the library, the same way an admin
    would with Remove, Delete files and Forget. That clears its rows, progress, bookmarks and cached images.
 4. **Vault** in the menu opens the ordinary Library on the Vault tab. Series pages, the reader and progress work as they
-   do for any series: the service worker (`web/public/e2e-sw.js`) answers the app's own API calls for vault series,
+   do for any series: the service worker (`web/public/vault-sw.js`) answers the app's own API calls for vault series,
    decrypting as it goes. `/vault` unlocks it on this device, then opens the Library filtered to it. A vault belongs to one account and is never shared.
 5. **Move out of vault** on a vault series' card decrypts it back into the downloads folder as CBZ files with
    `ComicInfo.xml`, and a scan picks it up as a new series.
@@ -46,8 +49,8 @@ item key ──AES-256-GCM──▶ manifest, cover, pages, progress            
 - Features that need the server to read the series show nothing for it: similar series, comments, gaps, bookmarks,
   notes, versions, translation, page resizing (pages come full size), admin edits, collections and favourites.
 - Vault series are only in the Vault tab, not in the Library's All view, Home or search.
-- The worker copies the server's answer shapes (`web/lib/types.ts`). `web/test/e2eWorker.test.ts` checks them; an
-  upstream change to those endpoints can need a matching change in the worker.
+- The worker copies the server's answer shapes (`web/lib/types.ts`). `web/test/vaultWorker.test.ts` checks them; a
+  change to those endpoints can need a matching change in the worker.
 - Moving out brings back the files and `ComicInfo.xml` details, not the source link, overrides or vault progress.
 - Removing a member doesn't rotate the vault key.
 - Needs HTTPS (or localhost) for WebCrypto. Accounts without a password (SSO, passwordless profiles) can't unlock a vault.
@@ -58,19 +61,11 @@ item key ──AES-256-GCM──▶ manifest, cover, pages, progress            
 
 | Where | What |
 | --- | --- |
-| `bff/src/fork/vaults/` | `schema.ts` (own tables and migration), `crypto.ts`, `move.ts` (move in and out), `routes.ts` (`/api/e2e/*`), `index.ts` |
-| `web/fork/vaults/` | `crypto.ts`, `device.ts` (IndexedDB device key), `session.ts` (keys, sign-in hooks), `hooks.tsx` (menu items), `VaultPage.tsx` (Manage vault) |
-| `web/public/e2e-sw.js` | answers the Library, series and reader APIs for vault series, decrypted |
-| `bff/test/e2eCrypto.test.ts`, `web/test/e2eVault.test.ts`, `web/test/e2eWorker.test.ts` | tests |
-
-Upstream files change by one to three lines each, all marked `fork-only`:
-
-| File | Hook |
-| --- | --- |
-| `bff/src/server.ts` | `registerE2E(app)` |
-| `web/components/Sidebar.tsx`, `SeriesMenu.tsx` | Vault menu item, Move to vault |
-| `web/lib/auth.tsx`, `web/components/ProfileAccount.tsx` | unlock at sign-in, forget at sign-out, re-wrap on password change |
-| `web/public/sw.js` | `importScripts('/e2e-sw.js')` |
-| `web/app/vault/page.tsx` (new), `web/app/globals.css` | the page; Tailwind scans `web/fork/` |
-
-`E2E_LIBRARIES=0` turns it off: no tables, no routes. Nothing runs in the background.
+| `bff/src/routes/vaults.ts` | `/api/e2e/*`, registered in `server.ts` only with `VAULTS` set |
+| `bff/src/lib/vaults.ts`, `bff/src/lib/vaultCrypto.ts` | moving a series in and out; the server's half of the crypto |
+| `bff/src/lib/migrate.ts` | the `e2e_*` tables |
+| `web/lib/vault.ts`, `web/lib/vaultCrypto.ts` | keys, the device copy (IndexedDB), the sign-in / sign-out / password-change hooks; the browser's crypto |
+| `web/lib/useVault.ts` | the Sidebar item, the series menu items, and `useShelf` (the Library page run as the Vault) |
+| `web/app/vault/page.tsx` | `/vault`: the unlock, then the Library |
+| `web/public/vault-sw.js` | imported by `sw.js`; answers the Library, series and reader APIs for vault series, decrypted |
+| `bff/test/vaultCrypto.test.ts`, `web/test/vaultCrypto.test.ts`, `web/test/vaultWorker.test.ts` | tests |

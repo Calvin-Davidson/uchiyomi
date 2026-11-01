@@ -86,6 +86,8 @@ The ones worth knowing:
   database*), and moving between the two is a dump and a restore, written down in both directions in
   [MIGRATING.md](MIGRATING.md). How to open a `psql` shell on either, and how to restore, is in
   [USAGE §12](USAGE.md#12-backups--restore).
+- `VAULTS` (off by default): end-to-end encrypted vaults, a private shelf per password account whose series the server
+  can't read. `VAULTS=1` turns them on; off, nothing about them is shown or answered. See [VAULTS.md](VAULTS.md).
 - `TRANSLATE_DIR`: where the optional translation engine goes when an admin downloads it (default
   `<CONFIG_DIR>/translate`). See [Translated pages](#translated-pages).
 

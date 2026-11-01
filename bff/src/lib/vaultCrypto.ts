@@ -1,5 +1,5 @@
-// Fork-only: the server's half of vault encryption. The browser half is web/fork/vaults/crypto.ts; the formats must stay
-// byte-compatible with it.
+// The server's half of vault encryption (docs/VAULTS.md). The browser half is web/lib/vaultCrypto.ts; the formats must
+// stay byte-compatible with it (test/vaultCrypto.test.ts).
 //
 // The server touches plaintext twice, and only when a member asks it to:
 //   - moving a series IN: it already holds the series in the clear, so it encrypts it under a fresh item key and seals

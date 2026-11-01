@@ -73,7 +73,7 @@ test('the Library header has the import for admins, beside where Add lives', () 
   assert.match(doors[1], /aria-label=\{tr\('Import a list'\)\}[\s\S]*lg:hidden/, 'the phone does not get the round key, or it has no name');
   assert.ok(header.indexOf('data-library-import title=') < header.indexOf('href="/discover"'), 'the phone\'s import is not beside Add');
   // With a fourth round key the row was 25-29 px wider than a 320 px screen in French and Russian: the title gives way.
-  assert.match(header, /<h1 className="min-w-0 truncate [^"]*">\{tr\('Library'\)\}<\/h1>\s*<div className="flex shrink-0 items-center gap-2">/,
+  assert.match(header, /<h1 className="min-w-0 truncate [^"]*">\{shelf\.title \?\? tr\('Library'\)\}<\/h1>\s*<div className="flex shrink-0 items-center gap-2">/,
     'the header row can be pushed past a narrow screen');
 });
 

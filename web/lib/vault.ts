@@ -1,25 +1,23 @@
-// Fork-only: the vault, from the web app's side. Three hooks are called from upstream files (each one fork-marked line):
-//   vaultAfterLogin   lib/auth.tsx login()        -- the password the person just typed unlocks (or creates) their key
-//   vaultForget       lib/auth.tsx sign-out       -- this device forgets every key
-//   vaultPasswordChanged components/ProfileAccount.tsx -- the key is re-wrapped under the new password
-// None of them may ever break what they are hooked into: each swallows its own failures.
-import { api, ApiError } from '@/lib/api';
+// End-to-end encrypted vaults (docs/VAULTS.md), from the web app's side: the keys, the calls to /api/e2e, and this
+// device's copy of the account's private key. Three hooks are called from elsewhere, and none of them may ever break
+// what they are hooked into, so each swallows its own failures:
+//   vaultAfterLogin       lib/auth.tsx login()                -- the password just typed unlocks (or creates) the key
+//   vaultForget           lib/auth.tsx sign-out               -- this device forgets every key
+//   vaultPasswordChanged  components/ProfileAccount.tsx       -- the key is re-wrapped under the new password
+// A server without VAULTS answers /api/e2e/status with a 404, and every one of them does nothing.
+import { api, ApiError } from './api';
 import {
-  ad, b64u, random, generateIdentity, IDENTITY_ALG, importPrivate, openFrom, openItemKey, passwordUnlocker, sealJson, sealTo,
+  ad, b64u, random, generateIdentity, IDENTITY_ALG, importPrivate, openFrom, openItemKey, passwordUnlocker, sealTo,
   unlockWith, VAULT_ALG, WRAP_ALG, type Bytes, type StoredWrap,
-} from './crypto';
-import { forgetDeviceKeys, hasDeviceKey, loadDeviceKey, saveDeviceKey } from './device';
+} from './vaultCrypto';
 
 // ── Wire shapes ────────────────────────────────────────────────────────────────────────────────────────────────
-export type Role = 'owner' | 'editor' | 'reader';
-export interface VaultRef { id: string; role: Role; ownerId: string; publicKey: string; wrapAlg: string; wrappedKey: string }
+export interface VaultRef { id: string; ownerId: string; publicKey: string; wrapAlg: string; wrappedKey: string }
 export interface VaultStatus { enabled: boolean; hasKeys: boolean; publicKey: string | null; passwordAccount: boolean; vaults: VaultRef[] }
 interface KeysDoc { alg: string; publicKey: string; wraps: StoredWrap[] }
-export interface Member { userId: string; username: string | null; displayName: string; role: Role; publicKey: string | null }
 /** One series in a vault, as the server sends it: everything but the counts is ciphertext. */
 export interface ItemRow { id: string; itemKey: string; meta: string; chapters: number; bytes: number; createdAt: string; state: string | null }
-export interface VaultDetail { id: string; role: Role; members: Member[]; items: ItemRow[] }
-export interface Job { kind: 'in' | 'out'; state: 'running' | 'done' | 'failed'; done: number; total: number; error: string | null }
+interface Job { kind: 'in' | 'out'; state: 'running' | 'done' | 'failed'; done: number; total: number; error: string | null }
 
 const enc = encodeURIComponent;
 
@@ -29,7 +27,7 @@ export function errorCode(e: unknown): string | null {
   try { return (JSON.parse(e.body) as { error?: string }).error ?? null; } catch { return null; }
 }
 
-/** The vault status, or null when the server has no vaults at all (E2E_LIBRARIES=0, or an upstream server). */
+/** The vault status, or null when the server has no vaults (VAULTS unset). */
 export async function fetchStatus(): Promise<VaultStatus | null> {
   try { return await api<VaultStatus>('/api/e2e/status'); } catch (e) {
     if (e instanceof ApiError && e.status === 404) return null;
@@ -38,6 +36,63 @@ export async function fetchStatus(): Promise<VaultStatus | null> {
 }
 
 const secure = (): boolean => typeof window !== 'undefined' && !!window.isSecureContext && !!globalThis.crypto?.subtle;
+
+/** Tell the service worker (public/vault-sw.js) to open the vault again: after a move, an unlock or a sign-in. */
+export function resetWorker(): void {
+  try { navigator.serviceWorker?.controller?.postMessage({ e2e: 'reset' }); } catch { /* no worker */ }
+}
+
+// ── This device's copy of the private key ──────────────────────────────────────────────────────────────────────
+// Kept in IndexedDB, encrypted under a device key that is a NON-EXTRACTABLE AES key: the browser can use it, no script
+// can read it out, and it never leaves this device. The service worker reads the same store to open pages, so the
+// database name, store and record shape are a contract with public/vault-sw.js. Holding the private key itself (wrapped)
+// rather than only a non-extractable copy is what lets a password change, or a reset done elsewhere, re-wrap it here.
+const DB_NAME = 'uchiyomi-e2e';
+const STORE = 'device';
+
+interface DeviceRecord { userId: string; dak: CryptoKey; iv: Bytes; ct: Bytes; publicKey: string; at: number }
+
+function openDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains(STORE)) r.result.createObjectStore(STORE, { keyPath: 'userId' }); };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+  });
+}
+
+async function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest): Promise<T> {
+  const db = await openDb();
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const req = fn(db.transaction(STORE, mode).objectStore(STORE));
+      req.onsuccess = () => resolve(req.result as T);
+      req.onerror = () => reject(req.error);
+    });
+  } finally { db.close(); }
+}
+
+/** Keep `pkcs8` on this device for `userId`, under a fresh non-extractable device key. */
+async function saveDeviceKey(userId: string, pkcs8: Bytes, publicKey: string): Promise<void> {
+  const dak = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const iv = random(12);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, dak, pkcs8));
+  await run('readwrite', (s) => s.put({ userId, dak, iv, ct, publicKey, at: Date.now() } satisfies DeviceRecord));
+}
+
+/** This device's copy of the private key for `userId`, or null. */
+async function loadDeviceKey(userId: string): Promise<{ pkcs8: Bytes; publicKey: string } | null> {
+  const rec = await run<DeviceRecord | undefined>('readonly', (s) => s.get(userId)).catch(() => undefined);
+  if (!rec) return null;
+  try {
+    const pkcs8 = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: rec.iv }, rec.dak, rec.ct));
+    return { pkcs8, publicKey: rec.publicKey };
+  } catch { return null; }
+}
+
+/** Whether this device holds the key for `userId`. */
+export const deviceUnlocked = async (userId: string): Promise<boolean> =>
+  !!(await run<DeviceRecord | undefined>('readonly', (s) => s.get(userId)).catch(() => undefined));
 
 // ── Keys ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -60,24 +115,16 @@ export function ensureVault(userId: string): Promise<void> {
   return ensuring ??= (async () => {
     const status = await fetchStatus();
     if (!status?.publicKey || !status.passwordAccount || status.vaults.some((v) => v.ownerId === userId)) return;
-    if (!(await hasDeviceKey(userId))) return;
+    if (!(await deviceUnlocked(userId))) return;
     await createVault(userId, status.publicKey);
   })().finally(() => { ensuring = null; });
 }
 
 async function unlockKey(userId: string, password: string, verified: boolean): Promise<void> {
-  let keys = await api<KeysDoc>('/api/e2e/keys').catch((e) => {
+  const keys = await api<KeysDoc>('/api/e2e/keys').catch((e) => {
     if (e instanceof ApiError && e.status === 404) return null;
     throw e;
   });
-  // A key with no password wrap (the first version's separate vault passphrase) that opens no vault: start over.
-  if (keys && !keys.wraps.some((w) => w.kind === 'password') && !(await hasDeviceKey(userId))) {
-    const status = await fetchStatus();
-    if (status && !status.vaults.length) {
-      await api('/api/e2e/keys', { method: 'DELETE' });
-      keys = null;
-    }
-  }
   if (!keys) {
     if (!verified) await api('/api/e2e/verify-password', { json: { password } }).catch((e) => {
       throw errorCode(e) === 'wrong_password' ? new Error('wrong_password') : e;
@@ -101,24 +148,22 @@ async function unlockKey(userId: string, password: string, verified: boolean): P
   }
 }
 
-/** Replace the password wrap (or add one) with `pkcs8` wrapped under `password`. */
+/** Replace the password wrap with `pkcs8` wrapped under `password`. */
 async function rewrap(userId: string, pkcs8: Bytes, password: string, keys: KeysDoc): Promise<void> {
-  const wrap = await passwordUnlocker(password).wrap(pkcs8, ad.identity(userId));
   const old = keys.wraps.find((w) => w.kind === 'password');
-  if (old) await api(`/api/e2e/keys/wraps/${enc(old.id)}`, { method: 'PUT', json: wrap });
-  else await api('/api/e2e/keys/wraps', { json: { kind: 'password', label: 'Account password', ...wrap } });
+  if (!old) throw new Error('no password wrap');
+  const wrap = await passwordUnlocker(password).wrap(pkcs8, ad.identity(userId));
+  await api(`/api/e2e/keys/wraps/${enc(old.id)}`, { method: 'PUT', json: wrap });
 }
 
 /** lib/auth.tsx, after a password sign-in. Never throws, never delays the sign-in. */
 export function vaultAfterLogin(userId: string, password: string): void {
   if (!secure()) return;
   void (async () => {
-    const status = await fetchStatus();
-    if (!status) return;
+    if (!(await fetchStatus())) return;
     await unlockWithPassword(userId, password, true);
-    // The service worker (public/e2e-sw.js) opens the vault again with the key this device now holds.
-    try { navigator.serviceWorker?.controller?.postMessage({ e2e: 'reset' }); } catch { /* no worker */ }
-  })().catch(() => { /* the vault banner offers the unlock again */ });
+    resetWorker();
+  })().catch(() => { /* /vault offers the unlock again */ });
 }
 
 /** components/ProfileAccount.tsx, after the password changed. Never throws. */
@@ -132,46 +177,32 @@ export async function vaultPasswordChanged(userId: string | undefined, oldPasswo
   } catch { /* no keys, or no copy here: the next sign-in on a device that has one re-wraps it */ }
 }
 
-/** lib/auth.tsx, at sign-out. */
+/** lib/auth.tsx, at sign-out: this device forgets every account's key. */
 export async function vaultForget(): Promise<void> {
-  await forgetDeviceKeys();
   vaultKeys.clear();
-}
-
-export const deviceUnlocked = (userId: string) => hasDeviceKey(userId);
-
-/** This device's private key for `userId`, ready to unwrap with. */
-async function myPrivateKey(userId: string): Promise<CryptoKey> {
-  const local = await loadDeviceKey(userId);
-  if (!local) throw new Error('locked');
-  const key = await importPrivate(local.pkcs8);
-  local.pkcs8.fill(0);
-  return key;
+  if (typeof indexedDB === 'undefined') return;
+  await run('readwrite', (s) => s.clear()).catch(() => {});
 }
 
 // ── Vaults ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** A new vault: its key pair is made here; the server gets the public half and the private half sealed to me. */
-export async function createVault(userId: string, myPublicKey: string): Promise<string> {
+async function createVault(userId: string, myPublicKey: string): Promise<void> {
   const id = `vault_${[...random(8)].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
   const kp = await generateIdentity();
   const wrappedKey = await sealTo(myPublicKey, kp.pkcs8, ad.vaultKey(id, userId));
   kp.pkcs8.fill(0);
   await api('/api/e2e/vaults', { json: { id, alg: VAULT_ALG, publicKey: b64u(kp.publicSpki), wrapAlg: WRAP_ALG, wrappedKey } });
-  return id;
 }
 
-export const vaultDetail = (id: string) => api<VaultDetail>(`/api/e2e/vaults/${enc(id)}`);
-export const deleteVault = (id: string) => api(`/api/e2e/vaults/${enc(id)}`, { method: 'DELETE' });
+export const vaultDetail = (id: string) => api<{ id: string; items: ItemRow[] }>(`/api/e2e/vaults/${enc(id)}`);
 /** Move a series in; the server encrypts it and then removes it from the library. Answers a job id to poll. */
 export const moveToVault = (id: string, seriesId: string) => api<{ job: string }>(`/api/e2e/vaults/${enc(id)}/series`, { json: { seriesId } });
-export const jobStatus = (job: string) => api<Job>(`/api/e2e/jobs/${enc(job)}`);
 
-/** Poll a job until it ends; `onTick` sees each answer. Throws with the server's message when it failed. */
-export async function waitForJob(job: string, onTick?: (j: Job) => void): Promise<Job> {
+/** Poll a job until it ends. Throws with the server's message when it failed. */
+export async function waitForJob(job: string): Promise<Job> {
   for (;;) {
-    const j = await jobStatus(job);
-    onTick?.(j);
+    const j = await api<Job>(`/api/e2e/jobs/${enc(job)}`);
     if (j.state === 'done') return j;
     if (j.state === 'failed') throw new Error(j.error || 'failed');
     await new Promise((r) => setTimeout(r, 1000));
@@ -180,12 +211,16 @@ export async function waitForJob(job: string, onTick?: (j: Job) => void): Promis
 
 const vaultKeys = new Map<string, Promise<CryptoKey>>();
 /** A vault's private key, opened with this device's key (once per vault per page load). */
-export function vaultPrivateKey(userId: string, vault: VaultRef): Promise<CryptoKey> {
+function vaultPrivateKey(userId: string, vault: VaultRef): Promise<CryptoKey> {
   const k = `${userId}:${vault.id}:${vault.wrappedKey}`;
   let p = vaultKeys.get(k);
   if (!p) {
     p = (async () => {
-      const pkcs8 = await openFrom(await myPrivateKey(userId), vault.wrappedKey, ad.vaultKey(vault.id, userId));
+      const local = await loadDeviceKey(userId);
+      if (!local) throw new Error('locked');
+      const mine = await importPrivate(local.pkcs8);
+      local.pkcs8.fill(0);
+      const pkcs8 = await openFrom(mine, vault.wrappedKey, ad.vaultKey(vault.id, userId));
       const key = await importPrivate(pkcs8);
       pkcs8.fill(0);
       return key;
@@ -202,10 +237,4 @@ export async function restoreItem(userId: string, vault: VaultRef, item: ItemRow
   try {
     return (await api<{ job: string }>(`/api/e2e/vaults/${enc(vault.id)}/items/${enc(item.id)}/restore`, { json: { itemKey: b64u(raw!) } })).job;
   } finally { raw!.fill(0); }
-}
-
-/** Save this member's reading progress in an item, encrypted under the item key. */
-export async function saveState(userId: string, vaultId: string, itemId: string, key: CryptoKey, state: unknown): Promise<void> {
-  const sealed = await sealJson(key, state, ad.state(itemId, userId));
-  await api(`/api/e2e/vaults/${enc(vaultId)}/items/${enc(itemId)}/state`, { method: 'PUT', json: { sealed } });
 }

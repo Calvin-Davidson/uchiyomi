@@ -1,8 +1,8 @@
-// Fork-only: the vault's browser crypto (web/fork/vaults/crypto.ts), run against Node's WebCrypto -- the same API the
-// browser has. That pages the SERVER seals open here is bff/test/e2eCrypto.test.ts's.
+// The vault's browser crypto (lib/vaultCrypto.ts), run against Node's WebCrypto -- the same API the browser has. That
+// pages the SERVER seals open here is bff/test/vaultCrypto.test.ts's.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as C from '../fork/vaults/crypto';
+import * as C from '../lib/vaultCrypto';
 
 const ALICE = '11111111-1111-4111-8111-111111111111';
 const BOB = '22222222-2222-4222-8222-222222222222';
@@ -43,15 +43,6 @@ test('the unlocked private key cannot be read back out', async () => {
   const priv = await C.importPrivate(id.pkcs8);
   assert.equal(priv.extractable, false);
   await assert.rejects(crypto.subtle.exportKey('pkcs8', priv));
-});
-
-test('fingerprints are stable and differ between keys', async () => {
-  const a = await C.generateIdentity();
-  const b = await C.generateIdentity();
-  const fa = await C.fingerprint(a.publicSpki);
-  assert.match(fa, /^[0-9A-F]{4}( [0-9A-F]{4}){5}$/);
-  assert.equal(await C.fingerprint(C.b64u(a.publicSpki)), fa);
-  assert.notEqual(await C.fingerprint(b.publicSpki), fa);
 });
 
 test('base64url round-trips any length, and random() fills more than 64 KiB', () => {

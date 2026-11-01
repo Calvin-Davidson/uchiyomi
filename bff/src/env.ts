@@ -164,6 +164,9 @@ const schema = z.object({
   OIDC_BOOTSTRAP_ADMIN_SUB: z.string().default(''),
   // SSO-only mode's way back in: password sign-in reopened for this one admin account while it is set.
   AUTH_RESCUE_ADMIN: z.string().default(''),
+  // End-to-end encrypted vaults (docs/VAULTS.md, routes/vaults.ts). Off unless set: off, /api/e2e is not registered and
+  // the web app shows no Vault.
+  VAULTS: envFlag(false),
   // Optional Suwayomi server used purely as an extension engine: it runs Mihon/Tachiyomi's Kotlin extensions
   // on the JVM and exposes them over GraphQL. Empty issuer = feature off, exactly like OIDC. Uchiyomi keeps
   // owning the library, reader, downloads and updates; Suwayomi only answers search/chapters/pages.

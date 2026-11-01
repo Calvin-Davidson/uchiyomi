@@ -1,4 +1,4 @@
-// Fork-only: the service worker that answers for vault series (public/e2e-sw.js) must hand the Library, series page and
+// The service worker that answers for vault series (public/vault-sw.js) must hand the Library, series page and
 // reader the same shapes the server does (lib/types.ts). Its builders run here on a made-up item; the type
 // annotations below fail to compile if a required field goes missing, and the asserts check what TypeScript can't.
 import test from 'node:test';
@@ -12,7 +12,7 @@ const ITEM = '33333333-3333-4333-8333-333333333333';
 
 function shapes() {
   const self: Record<string, unknown> & { addEventListener: () => void } = { addEventListener: () => {} };
-  vm.runInNewContext(readFileSync(join(__dirname, '../public/e2e-sw.js'), 'utf8'), { self, location: { origin: 'http://x' }, TextEncoder, TextDecoder, crypto, atob, btoa, URL, Response });
+  vm.runInNewContext(readFileSync(join(__dirname, '../public/vault-sw.js'), 'utf8'), { self, location: { origin: 'http://x' }, TextEncoder, TextDecoder, crypto, atob, btoa, URL, Response });
   // Plain copies: objects made in the vm's realm are not deepEqual to this one's.
   const raw = self.__uchiyomiVaultShapes as Record<string, (...a: unknown[]) => unknown>;
   const own = Object.fromEntries(Object.entries(raw).map(([k, f]) => [k, (...a: unknown[]) => JSON.parse(JSON.stringify(f(...a)) ?? 'null')]));

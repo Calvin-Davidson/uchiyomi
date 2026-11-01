@@ -1,5 +1,6 @@
-// Fork-only: the browser side of end-to-end encrypted vaults, with WebCrypto. The server (bff/src/fork/vaults) stores
-// public keys and what this file seals, and can read none of it. Keep the formats in step with bff/src/fork/vaults/crypto.ts.
+// The browser side of end-to-end encrypted vaults (docs/VAULTS.md), with WebCrypto. The server (bff/src/routes/vaults.ts)
+// stores public keys and what this file seals, and can read none of it. Keep the formats in step with
+// bff/src/lib/vaultCrypto.ts and public/vault-sw.js.
 //
 //   account password ──PBKDF2──▶ KEK ──AES-GCM──▶ member private key (ECDH P-256)        e2e_key_wraps
 //   member public key ◀──ECIES── vault private key (ECDH P-256)                          e2e_vault_members
@@ -7,7 +8,7 @@
 //   item key ──AES-GCM──▶ manifest, cover, pages, each member's progress
 //
 // The member private key is unlocked through an `Unlocker`. `passwordUnlocker` derives the KEK from the account
-// password at sign-in; this device then keeps the key under a non-extractable device key (device.ts) -- the DAK. A
+// password at sign-in; this device then keeps the key under a non-extractable device key (vault.ts) -- the DAK. A
 // passkey or another device key would be one more Unlocker and one more e2e_key_wraps row for the SAME private key.
 
 /** Bytes WebCrypto accepts (an ArrayBuffer-backed view: TS 5.7+ distinguishes it from a SharedArrayBuffer one). */
@@ -40,7 +41,6 @@ export function unb64u(s: string): Bytes {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-export const newId = (): string => crypto.randomUUID();
 
 // ── Associated data: what each ciphertext is bound to ─────────────────────────────────────────────────────────
 export const ad = {
@@ -54,7 +54,7 @@ export const ad = {
 };
 
 // ── AES-256-GCM ─────────────────────────────────────────────────────────────────────────────────────────────────
-export const importAes = (raw: Bytes, usages: KeyUsage[] = ['encrypt', 'decrypt']) =>
+const importAes = (raw: Bytes, usages: KeyUsage[] = ['encrypt', 'decrypt']) =>
   subtle().importKey('raw', raw, { name: 'AES-GCM' }, false, usages);
 
 async function gcm(key: CryptoKey, plain: Bytes, aad: Bytes): Promise<{ iv: Bytes; ct: Bytes }> {
@@ -92,13 +92,6 @@ export async function generateIdentity(): Promise<NewIdentity> {
 export const importPrivate = (pkcs8: Bytes) => subtle().importKey('pkcs8', pkcs8, EC, false, ['deriveBits']);
 const importPublic = (spki: Bytes) => subtle().importKey('spki', spki, EC, true, []);
 
-/** A short, human-comparable fingerprint of a public key, to check out of band that a key is who it says. */
-export async function fingerprint(publicSpki: Bytes | string): Promise<string> {
-  const bytes = typeof publicSpki === 'string' ? unb64u(publicSpki) : publicSpki;
-  const h = new Uint8Array(await subtle().digest('SHA-256', bytes)).slice(0, 12);
-  return [...h].map((b) => b.toString(16).padStart(2, '0')).join('').toUpperCase().match(/.{4}/g)!.join(' ');
-}
-
 // ── Unlockers: how the private key is wrapped at rest ───────────────────────────────────────────────────────────
 export interface Unlocker {
   /** Stored as e2e_key_wraps.kind. */
@@ -108,7 +101,7 @@ export interface Unlocker {
 }
 
 /** OWASP's 2023 floor for PBKDF2-HMAC-SHA256. Stored per wrap, so raising it later only affects new wraps. */
-export const PBKDF2_ITERATIONS = 600_000;
+const PBKDF2_ITERATIONS = 600_000;
 
 async function passphraseKek(passphrase: string, salt: Bytes, iterations: number): Promise<CryptoKey> {
   const base = await subtle().importKey('raw', utf8(passphrase.normalize('NFKC')), 'PBKDF2', false, ['deriveKey']);

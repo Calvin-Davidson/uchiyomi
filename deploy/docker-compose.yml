@@ -59,6 +59,8 @@ services:
       OIDC_ADMIN_GROUP: ${OIDC_ADMIN_GROUP:-}
       # SSO-only sign-in (v0.63.0): AUTH_MODE=oidc-only makes the provider the only way in. See docs/api.md, SSO-only mode.
       AUTH_MODE: ${AUTH_MODE:-local}
+      # End-to-end encrypted vaults (off by default): VAULTS=1 in .env. See docs/VAULTS.md.
+      VAULTS: ${VAULTS:-false}
       OIDC_BOOTSTRAP_ADMIN_SUB: ${OIDC_BOOTSTRAP_ADMIN_SUB:-}
       AUTH_RESCUE_ADMIN: ${AUTH_RESCUE_ADMIN:-}
       # Extension engine (Mihon/Tachiyomi extensions). EXTENSION_ENGINE=0 in .env turns it off and drops the
