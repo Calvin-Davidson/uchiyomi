@@ -2528,6 +2528,14 @@ numbers that can't be real, series waiting for a renumbering review, any source 
 extension engine. Each check says what it found and what it cannot see. Hit **Re-check** to run them again. Since
 v0.49.1 the page says the server's findings in your language, with dates and times in your own time zone.
 
+A short chapter is not a finding when it is short on purpose: a half-chapter (*12.5*, usually an author's notice), and
+a chapter whose title names a special — *Q&A Announcement!*, *Giveaway!*, *Author's Note*, *Bonus Illustration*, a
+hiatus notice. Those are counted on the card (*2 specials left out*) instead of listed, and the nightly repair does
+not hunt other sources for longer copies of them. The whole title has to say so, and its creator must not have
+numbered it: *The Announcement*, *Bonus Round* and *82. Announcement* are episodes and are still checked, as is a
+chapter whose title only says its number. (*Chapter 82: Q&A* can still be a special: sources write *Chapter 82* in
+front of every post.)
+
 Since v0.55.10 a chapter stitched into one or two long strips (its images together at least ten times as tall as they
 are wide) is a whole chapter, not a short one: Health measures such a chapter's pages once, as the reader does, and
 leaves it off the short-chapter card. A placeholder, an ad or a credits banner is still listed.
