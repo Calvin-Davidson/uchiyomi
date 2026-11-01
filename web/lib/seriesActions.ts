@@ -61,6 +61,12 @@ export interface SeriesActionsInput {
   busy?: Partial<Record<SeriesActionId, boolean>>;
   /** This series' saved pages and notes, once asked for (More asks when it opens); null before. */
   notes?: { moments: number; notes: number } | null;
+  /**
+   * A vault series (lib/vault.ts isVaultSeries): the server has no such series, so only what the service worker answers
+   * for it is offered -- its read state, sharing its link, and Edit details, which is its owner's whether or not they
+   * are an admin.
+   */
+  inVault?: boolean;
 }
 
 /**
@@ -79,15 +85,17 @@ export function notesLabel(counts: { moments: number; notes: number } | null | u
 export function seriesActionGroups(x: SeriesActionsInput): SeriesActionGroup[] {
   const offline = !!x.offline;
   const some = x.booksCount > 0;
+  const vault = !!x.inVault;
   const reading: SeriesAction[] = [
-    { id: 'notes', label: notesLabel(x.notes), hook: 'notes' },
+    ...(!vault ? [{ id: 'notes' as const, label: notesLabel(x.notes), hook: 'notes' }] : []),
     // Nothing to mark on a "Nothing yet" series: Mark all read would say "Everything is already read".
     ...(some ? [
       { id: 'markAllRead' as const, label: tr('Mark all read'), disabled: offline },
       { id: 'markAllUnread' as const, label: tr('Mark all unread'), disabled: offline },
     ] : []),
+    ...(vault ? [{ id: 'edit' as const, label: tr('Edit details'), hook: 'edit-details', disabled: offline }] : []),
   ];
-  const chapters: SeriesAction[] = [
+  const chapters: SeriesAction[] = vault ? [] : [
     // Refused below three chapters by the route itself, so not offered there.
     ...(x.mayDownload && x.booksCount >= 3 ? [{ id: 'findMissing' as const, label: tr('Find missing chapters'), disabled: offline }] : []),
     // #240: an admin's way back to the numbers hidden from this series, only while there is one -- a series with nothing
@@ -101,7 +109,7 @@ export function seriesActionGroups(x: SeriesActionsInput): SeriesActionGroup[] {
     { id: 'copyLink', label: tr('Copy link') },
     { id: 'openTab', label: tr('Open in a new tab') },
   ];
-  const admin: SeriesAction[] = x.isAdmin ? [
+  const admin: SeriesAction[] = x.isAdmin && !vault ? [
     { id: 'edit', label: tr('Edit details'), hook: 'edit-details', disabled: offline },
     // #242: a cover from one of the sources the series uses, or an upload. Here rather than a key under the art, where a
     // phone reads Continue first (v0.67.0); a desktop's poster opens it too.

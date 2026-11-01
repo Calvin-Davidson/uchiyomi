@@ -59,12 +59,16 @@ export function useShelf(): Shelf {
   return { base: '/vault/', title: tr('Vault'), lib: data?.vaults[0]?.id ?? 'vault' };
 }
 
+/** Whether this page shows a vault series: /series?id=vlt-… (the Sidebar's Vault is lit there, not Library). */
+const onVaultSeries = (path: string): boolean =>
+  path.startsWith('/series') && typeof window !== 'undefined' && isVaultSeries(new URLSearchParams(window.location.search).get('id') ?? '');
+
 /** The Sidebar's item: the Vault, which is the Library filtered to it (or the unlock, until this device has the key). */
 export function useVaultNav(): { href: string; label: string; Icon: typeof IcLock; match: (p: string) => boolean } | null {
   const { data } = useVaultStatus();
   if (!data?.enabled || (!data.vaults.length && !data.passwordAccount)) return null;
   // Sidebar says its items' labels through tr().
-  return { href: '/vault/', label: 'Vault', Icon: IcLock, match: (p) => p.startsWith('/vault') };
+  return { href: '/vault/', label: 'Vault', Icon: IcLock, match: (p) => p.startsWith('/vault') || onVaultSeries(p) };
 }
 
 /** On a series card: "Move to vault", or "Move out of vault" for a series that is in one. */

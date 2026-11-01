@@ -204,7 +204,7 @@ test('"Save offline" and the Offline tab are hidden on desktop, and smart offlin
   // Reintroduce it on desktop -- drop `!x.desktop` there, or draw the key without asking it -- and "Save all offline
   // shows on desktop" fails.
   const series = code(read('app/series/page.tsx'));
-  assert.match(series, /\{offlineKeyShown\(\{ nothingYet, desktop: isDesktop\(\) \}\) && \(\s*<SeriesKey [\s\S]{0,300}?name=\{downloadingAll \? tr\('Saving…'\) : tr\('Save all offline'\)\}/,
+  assert.match(series, /\{!inVault && offlineKeyShown\(\{ nothingYet, desktop: isDesktop\(\) \}\) && \(\s*<SeriesKey [\s\S]{0,300}?name=\{downloadingAll \? tr\('Saving…'\) : tr\('Save all offline'\)\}/,
     'Save all offline shows on desktop');
   assert.equal(offlineKeyShown({ nothingYet: false, desktop: true }), false, 'Save all offline shows on desktop');
   assert.equal(offlineKeyShown({ nothingYet: false, desktop: false }), true, 'Save all offline is gone from the server build too');

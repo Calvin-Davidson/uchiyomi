@@ -145,7 +145,8 @@ test('the page: four keys under the button, More by width, the sheet closed befo
   assert.ok(keys.length > 100, 'the key row is not where this test looks');
   const order = ['<FavouriteKey ', 'label={tr(\'Offline\')}', 'label={tr(\'List\')}', '<MoreKey '].map((k) => keys.indexOf(k));
   assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), `the keys are not Favourite, Offline, List, More: ${order}`);
-  assert.match(keys, /\{offlineKeyShown\(\{ nothingYet, desktop: isDesktop\(\) \}\) && \(/, 'the Offline key is not offlineKeyShown\'s');
+  // `!inVault &&`: a vault series keeps no pages offline (lib/vault.ts).
+  assert.match(keys, /\{!inVault && offlineKeyShown\(\{ nothingYet, desktop: isDesktop\(\) \}\) && \(/, 'the Offline key is not offlineKeyShown\'s');
   assert.match(keys, /name=\{downloadingAll \? tr\('Saving…'\) : tr\('Save all offline'\)\} onClick=\{downloadAll\}/, 'the Offline key is not Save all offline');
   assert.match(keys, /label=\{tr\('List'\)\} title=\{tr\('Add to list'\)\} onClick=\{\(\) => setCollecting\(true\)\}/, 'List does not open Add to list');
   // The old stack is gone from under the cover.
@@ -184,4 +185,11 @@ test('Show hidden chapters: an admin\'s, under Chapters, only while a number is 
   assert.equal(item?.hook, 'hidden-chapters');
   assert.ok(!chapters({ ...MEMBER, hiddenChapters: 2 }).some((i) => i.id === 'hidden'), 'a member is offered it');
   assert.equal(chapters({ ...ADMIN, hiddenChapters: 2, offline: true }).find((i) => i.id === 'hidden')?.disabled, true, 'greyed while offline');
+});
+
+test('a vault series: its read state, its link and Edit details, for an admin and a member alike', () => {
+  // The server has no such series (lib/vault.ts): Check for new chapters, notes, Move library and the rest would fail there.
+  for (const who of [MEMBER, ADMIN]) {
+    assert.deepEqual(shape({ ...who, hiddenChapters: 3, inVault: true }), ['reading: markAllRead markAllUnread edit', 'share: copyLink openTab']);
+  }
 });

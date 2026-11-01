@@ -258,6 +258,20 @@ export default async function vaultRoutes(app: FastifyInstance) {
     } finally { await fh.close(); }
   });
 
+  /**
+   * Edited details: the item's manifest, sealed again in the member's browser under the same item key (Edit details on a
+   * vault series, public/vault-sw.js). The server can't read it, so it can only check its shape; a move out opens it.
+   */
+  // Its own body cap: the manifest lists every page's size, and a long series' runs past the server's 2 MB default.
+  app.put('/api/e2e/vaults/:id/items/:item/meta', { bodyLimit: 8 * 1024 * 1024 }, async (req, reply) => {
+    const it = await itemOf(req, reply);
+    if (!it) return;
+    const b = z.object({ sealed: opaque(8 * 1024 * 1024).regex(/^g1\./) }).safeParse(req.body ?? {});
+    if (!b.success) return bad(reply);
+    await q('UPDATE e2e_vault_items SET meta = $3 WHERE id = $1 AND vault_id = $2', [it.item, it.vault, b.data.sealed]);
+    return { ok: true };
+  });
+
   /** The caller's reading progress in one item, encrypted in their browser under the item key. */
   app.put('/api/e2e/vaults/:id/items/:item/state', async (req, reply) => {
     const it = await itemOf(req, reply);

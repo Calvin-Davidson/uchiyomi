@@ -46,8 +46,12 @@ item key ──AES-256-GCM──▶ manifest, cover, pages, progress            
 ## Limits
 
 - A vault series isn't followed: no new chapters, trackers, OPDS or Komga API. Move it out, update it, move it back in.
-- Features that need the server to read the series show nothing for it: similar series, comments, gaps, bookmarks,
-  notes, versions, translation, page resizing (pages come full size), admin edits, collections and favourites.
+- Features that need the server to read the series show nothing for it, and aren't offered on it: similar series,
+  comments, gaps, bookmarks, notes, versions, translation, page resizing (pages come full size), cover and banner,
+  collections, favourites and Save offline (which would keep its pages decrypted on the device).
+- What does work is answered in the browser: progress, Mark all read / unread, your rating (kept with your progress,
+  encrypted), and Edit details for title, description, author, status and genres (the manifest is sealed again in the
+  browser, for its owner whether or not they are an admin; a move out takes the edited details with it).
 - Vault series are only in the Vault tab, not in the Library's All view, Home or search.
 - The worker copies the server's answer shapes (`web/lib/types.ts`). `web/test/vaultWorker.test.ts` checks them; a
   change to those endpoints can need a matching change in the worker.

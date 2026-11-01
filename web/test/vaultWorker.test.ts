@@ -23,6 +23,7 @@ function shapes() {
     pageDto: (it: unknown, ch: number) => PageInfo[]; page: <T>(all: T[], n: number, size: number) => Page<T>;
     parse: (id: string) => { item: string; ch: number | null } | null;
     matches: (condition: unknown, s: Series) => boolean;
+    applyMeta: (manifest: unknown, body: unknown) => typeof item.manifest;
   };
 }
 
@@ -85,4 +86,14 @@ test("the Library's filters narrow the Vault as the server narrows the Library",
   // No sources: a source filter keeps none of them, "No source" all of them.
   assert.ok(!keeps(fresh, '', '', [], 'mangadex') && !keeps(fresh, '', '', [], '', 'mangadex') && keeps(fresh, '', '', [], NO_SOURCE));
   assert.ok(keeps(fresh) && !S.matches(conditionFrom('', '', [], 'vault_ffffffffffffffff'), fresh));
+});
+
+test('Edit details changes what the manifest holds, and the stars come back on the series', () => {
+  const S = shapes();
+  const m = S.applyMeta({ ...item.manifest }, { title: '  New name ', summary: '', author: 'B', status: 'ENDED', genres: [' Horror ', ''], ageRating: 18 });
+  assert.deepEqual([m.title, m.summary, m.author, m.status, m.genres], ['New name', null, 'B', 'ENDED', ['Horror']]);
+  // A series always has a title: an emptied field keeps the one it had.
+  assert.equal(S.applyMeta({ ...item.manifest }, { title: '' }).title, 'Secret');
+  assert.equal(S.seriesDto({ id: 'v' }, { ...item, state: { ...item.state, rating: 4 } }).yomi?.rating, 4);
+  assert.equal(S.seriesDto({ id: 'v' }, item).yomi?.rating, null);
 });

@@ -129,9 +129,14 @@ function keepFocusIn(panel: HTMLElement, e: KeyboardEvent): void {
   else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
 }
 
-export function SeriesEditor({ id, series, tab: opening = 'details', onClose, onSaved, onOpenSources, onNewBanner }: {
+export function SeriesEditor({ id, series, tab: opening = 'details', vault = false, onClose, onSaved, onOpenSources, onNewBanner }: {
   id: string;
   series: Series;
+  /**
+   * A vault series (lib/vault.ts): Details only -- its title, description, author, status and genres, which the service
+   * worker seals into the series' encrypted manifest. Art, reading, updates and files are the server's, which has none of it.
+   */
+  vault?: boolean;
   /** The tab it opens on: Details from its key, Reading from the Sources sheet's language Change. */
   tab?: EditTab;
   onClose: () => void;
@@ -152,7 +157,7 @@ export function SeriesEditor({ id, series, tab: opening = 'details', onClose, on
   const plain = useReduceEffects();
   const still = useReducedMotion();
   const scope = useSaveScope();
-  const [tab, setTab] = useState<EditTab>(opening);
+  const [tab, setTab] = useState<EditTab>(vault ? 'details' : opening);
   const [meta, setMeta] = useState<SeriesMeta>(() => seedMeta(series));
   const [saver] = useState(() => metaSaver(seedMeta(series), (body) => api(`/api/admin/series/${id}/meta`, { method: 'PUT', json: body }), setMeta));
   const saveMeta = (patch: Partial<SeriesMeta>) => saver.save(patch).then(() => { onSaved(); });
@@ -236,7 +241,7 @@ export function SeriesEditor({ id, series, tab: opening = 'details', onClose, on
             <div className="min-w-0 flex-1">
               <h2 id={`${uid}-title`} className="font-display text-lg font-semibold leading-tight text-fog-50 md:text-xl">{tr('Edit details')}</h2>
               <p className="mt-0.5 line-clamp-2 break-words text-xs text-fog-500">
-                <bdi dir="auto" className="text-fog-400">{shownTitle}</bdi> · {tr('Changes apply for everyone')}
+                <bdi dir="auto" className="text-fog-400">{shownTitle}</bdi>{!vault && <> · {tr('Changes apply for everyone')}</>}
               </p>
             </div>
             {/* The latest save's state, for the whole dialog. A long refusal is cut here (the kit's SaveState carries
@@ -253,7 +258,7 @@ export function SeriesEditor({ id, series, tab: opening = 'details', onClose, on
           {/* Text tabs with an accent underline, the Library's Series | Downloads. A row too long for a phone scrolls
               inside itself, never the page; the underline sits on the row's own inset line, which a scroller would
               clip if it hung over a border below it. */}
-          <div role="tablist" aria-label={tr('Edit details')} data-lenis-prevent-horizontal
+          {!vault && <div role="tablist" aria-label={tr('Edit details')} data-lenis-prevent-horizontal
             className="hide-scrollbar mt-3 flex shrink-0 items-end gap-5 overflow-x-auto px-4 shadow-[inset_0_-1px_0_var(--color-ink-800)] md:gap-6 md:px-6">
             {TABS.map((t, i) => {
               const on = t === tab;
@@ -269,20 +274,21 @@ export function SeriesEditor({ id, series, tab: opening = 'details', onClose, on
                 </button>
               );
             })}
-          </div>
+          </div>}
 
           <div ref={bodyRef} data-lenis-prevent
             className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-4 md:px-6 md:pb-6 md:pt-5">
-            <div className="md:grid md:grid-cols-[15rem_minmax(0,1fr)] md:items-start md:gap-7">
+            <div className={vault ? 'mt-1' : 'md:grid md:grid-cols-[15rem_minmax(0,1fr)] md:items-start md:gap-7'}>
               {/* The art: the start column from md up, the Art tab below it. */}
-              <section id={`${uid}-art`} role={tab === 'art' ? 'tabpanel' : 'region'} aria-labelledby={tab === 'art' ? tabId('art') : undefined}
+              {!vault && <section id={`${uid}-art`} role={tab === 'art' ? 'tabpanel' : 'region'} aria-labelledby={tab === 'art' ? tabId('art') : undefined}
                 aria-label={tab === 'art' ? undefined : tr('Art')} data-edit-pane="art" className={`${tab === 'art' ? '' : 'hidden'} min-w-0 md:block`}>
                 <ArtPanel id={id} series={series} onSaved={onSaved} onNewBanner={onNewBanner} />
-              </section>
+              </section>}
               <div className={`min-w-0 [&_.field]:max-w-none ${tab === 'art' ? 'hidden md:block' : ''}`}>
                 <Pane id={paneId('details')} tab={tabId('details')} shown={fields === 'details'} name="details">
                   <DetailsPane meta={meta} save={saveMeta} />
                 </Pane>
+                {!vault && <>
                 <Pane id={paneId('reading')} tab={tabId('reading')} shown={fields === 'reading'} name="reading">
                   <ReadingPane id={id} series={series} meta={meta} save={saveMeta} onSaved={onSaved} />
                 </Pane>
@@ -292,6 +298,7 @@ export function SeriesEditor({ id, series, tab: opening = 'details', onClose, on
                 <Pane id={paneId('files')} tab={tabId('files')} shown={fields === 'files'} name="files">
                   <FilesPane id={id} series={series} onSaved={onSaved} />
                 </Pane>
+                </>}
               </div>
             </div>
           </div>

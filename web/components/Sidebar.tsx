@@ -105,7 +105,8 @@ export function Sidebar() {
   const flagged = admin && tone && health ? `${tr(admin.label)} · ${headlineText(health) ?? tr('Health')}` : null;
 
   const link = (i: Item, extra?: { badge?: ReactNode; icon?: ReactNode; name?: string; mark?: string; sub?: { text: string; href: string } }) => {
-    const active = i.match(path);
+    // On the Vault, or a series in it, the Vault is lit and Library (which matches every series page) is not.
+    const active = vaultNav?.match(path) ? i === vaultNav : i.match(path);
     // Offline only Offline leads anywhere; the rest stay in view, inert (as the phone's bar does).
     const dead = offline && i.href !== '/downloads';
     return (

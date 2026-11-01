@@ -73,6 +73,7 @@ import { continueChoice, continueText, readCountText } from '@/lib/continueLabel
 import { radarText } from '@/lib/radar';
 import { catchUpText } from '@/lib/readingTime';
 import { offlineKeyShown, seriesActionGroups, type SeriesActionId } from '@/lib/seriesActions';
+import { isVaultSeries } from '@/lib/vault';
 import { RatingsPanel, useSeriesRating } from '@/components/RatingsPanel';
 import { ContinueBar, ContinueButton, ReadProgress, useOutOfView } from '@/components/ContinueBar';
 import { FavouriteKey, IcListAdd, MoreKey, SeriesKey, SeriesMoreSheet, moreMenuItems } from '@/components/SeriesKeys';
@@ -748,6 +749,9 @@ function EditionChips({ editions, onAdd, className = '' }: { editions: EditionRo
 
 function SeriesInner() {
   const id = useSearchParams().get('id') || '';
+  // A vault series (lib/vault.ts): the service worker answers for it, so only what it can answer is offered -- no
+  // favourite, list, sources or Save offline (which would keep its pages decrypted on this device).
+  const inVault = isVaultSeries(id);
   const wantCh = chParam(useSearchParams().get('ch'));
   // Health's Open on a numbering finding (#116, lib/healthLinks.ts numberingHref): the plan, open on arrival.
   const wantPlan = useSearchParams().get('numbering') === 'review';
@@ -1725,7 +1729,7 @@ function SeriesInner() {
   const moreGroups = seriesActionGroups({
     isAdmin, mayDownload: canDownload(user), booksCount: series?.booksCount ?? 0, mayArchive,
     autoHero: !!series?.autoHero, hasFolder: !!series?.folder, offline: authStatus === 'offline', notes: notesCounts,
-    hiddenChapters: series?.hiddenChapters ?? 0,
+    hiddenChapters: series?.hiddenChapters ?? 0, inVault,
     busy: { checkNew: checking, archive: acting, newBanner: busyAdmin },
   });
   const runAction = (a: SeriesActionId) => {
@@ -1782,16 +1786,18 @@ function SeriesInner() {
       {outlook && <p data-series-outlook className="-mt-1 text-start text-[11px] leading-snug text-fog-500">{outlook}</p>}
       {/* Four keys, or three where there is nothing to save offline. Equal widths, whatever their number. */}
       <div data-series-keys className="mt-0.5 grid auto-cols-fr grid-flow-col gap-1.5">
-        <FavouriteKey on={fav} pops={favPops} onToggle={toggleFav} />
+        {!inVault && <FavouriteKey on={fav} pops={favPops} onToggle={toggleFav} />}
         {/* "Save all offline", not "Download all": this copies to THIS DEVICE; the server side is Fetch (☁). Never on
             Uchiyomi Desktop, where this device IS the server (lib/desktop.ts). The key's word is "Offline", its name the
             whole action. */}
-        {offlineKeyShown({ nothingYet, desktop: isDesktop() }) && (
+        {!inVault && offlineKeyShown({ nothingYet, desktop: isDesktop() }) && (
           <SeriesKey icon={downloadingAll ? <ProgressRing progress="spin" size={20} /> : <IcDownload width={20} height={20} aria-hidden />}
             label={tr('Offline')} name={downloadingAll ? tr('Saving…') : tr('Save all offline')} onClick={downloadAll} disabled={downloadingAll} />
         )}
-        <SeriesKey icon={<IcListAdd />} label={tr('List')} title={tr('Add to list')} onClick={() => setCollecting(true)}
-          attrs={{ 'aria-haspopup': 'dialog' }} />
+        {!inVault && (
+          <SeriesKey icon={<IcListAdd />} label={tr('List')} title={tr('Add to list')} onClick={() => setCollecting(true)}
+            attrs={{ 'aria-haspopup': 'dialog' }} />
+        )}
         <MoreKey onOpen={openMore} open={moreOpen} menu={wide} />
       </div>
     </div>
@@ -2133,7 +2139,7 @@ function SeriesInner() {
           {editions && <EditionChips editions={editions} onAdd={addLanguage} className="mt-3 lg:hidden" />}
           {/* The supply line, phone form. The desktop form is the first row of the right column (the title block over the
               banner is `pointer-events-none`, so a button cannot live there). */}
-          <div className="mt-3 lg:hidden"><SupplyLine parts={supplyPhone} loaded={supplyLoaded} wide={false} onOpen={() => setSourcesOpen(true)} /></div>
+          {!inVault && <div className="mt-3 lg:hidden"><SupplyLine parts={supplyPhone} loaded={supplyLoaded} wide={false} onOpen={() => setSourcesOpen(true)} /></div>}
         </div>
 
         {/* info + chapters */}
@@ -2141,7 +2147,7 @@ function SeriesInner() {
           {/* The ratings, desktop form: the top of this column, where the sticky one beside it has no room left -- and
               no wider than its two tiles need. */}
           {series && <div className="hidden lg:block"><RatingsPanel anilist={series.yomi?.anilist} rating={rating} onRate={rate} className="max-w-[440px]" /></div>}
-          <div className="hidden lg:block"><SupplyLine parts={supplyWide} loaded={supplyLoaded} wide onOpen={() => setSourcesOpen(true)} /></div>
+          {!inVault && <div className="hidden lg:block"><SupplyLine parts={supplyWide} loaded={supplyLoaded} wide onOpen={() => setSourcesOpen(true)} /></div>}
           {Genres}
           {series && <OtherTitles seriesId={id} shown={title} />}
           {Summary}
@@ -2242,7 +2248,7 @@ function SeriesInner() {
       )}
       {editing && series && (
         // Keyed by the series: its fields are seeded once, from the series it opened on.
-        <SeriesEditor key={id} id={id} series={series} tab={editing} onClose={() => setEditing(null)}
+        <SeriesEditor key={id} id={id} series={series} tab={editing} vault={inVault} onClose={() => setEditing(null)}
           onSaved={() => { for (const k of [['series', id], ['series-books', id], ['home'], ['library']]) qc.invalidateQueries({ queryKey: k }); }}
           // Its Sources & translations link closes it first: one at a time, as the sheets above.
           onOpenSources={() => { setEditing(null); setSourcesOpen(true); }}
@@ -2277,7 +2283,7 @@ function SeriesInner() {
       {/* After the select bar, which takes the same place and hides this one. */}
       <ContinueBar shown={barShown}>
         <ContinueButton compact label={ctaText.label} disabled={!resumeBook} onOpen={openReader} />
-        <FavouriteKey compact on={fav} pops={favPops} onToggle={toggleFav} />
+        {!inVault && <FavouriteKey compact on={fav} pops={favPops} onToggle={toggleFav} />}
         <MoreKey compact onOpen={openMore} open={moreSheet} menu={false} />
       </ContinueBar>
       {more.element}

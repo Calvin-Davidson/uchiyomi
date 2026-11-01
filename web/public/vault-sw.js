@@ -10,6 +10,8 @@
  *   GET  /api/books/vlt-<item>~<ch>[/pages] a chapter and its pages
  *   PUT  /api/books/vlt-…/progress          progress, encrypted here and stored with /api/e2e
  *   POST /api/library/bulk/read             Mark all read / unread, for the vault series in it
+ *   PUT  /api/admin/series/vlt-…/meta       Edit details: the manifest, sealed again here and stored with /api/e2e
+ *   PUT|DELETE /api/ratings/vlt-…           the viewer's stars, kept with their progress
  *   GET  /img/series|books/vlt-…            covers, chapter thumbnails, pages (decrypted)
  *   anything else about a vault series      an empty answer (GET) or 403 (a write the server can't do on ciphertext)
  *
@@ -171,6 +173,7 @@
       metadata: { title: m.title, status: m.status || undefined, summary: m.summary || undefined, author: m.author || undefined, genres: m.genres, tags: [] },
       booksMetadata: { summary: m.summary || undefined, genres: m.genres, tags: [] },
       color: null, source: null, artVersion: 0, autoHero: null, sources: [], seriesType: 'unknown', workId: null, edition: null,
+      yomi: { favorite: false, rating: it.state.rating ?? null },
       lastReadAt: Object.values(it.state.chapters).map((s) => s.at).sort().pop() || null,
       latestChapterAt: m.movedAt,
     };
@@ -269,6 +272,52 @@
     return json({ ok: true, applied, skipped });
   }
 
+  /**
+   * Edit details (PUT /api/admin/series/<vault series>/meta, components/SeriesEditor.tsx): the fields a manifest holds,
+   * as the route reads them -- '' clears one, and the title, which a series cannot go without, keeps what it was.
+   */
+  function applyMeta(m, body) {
+    const text = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : undefined);
+    const title = text(body.title, 300);
+    if (title) m.title = title;
+    for (const [k, max] of [['summary', 8000], ['author', 300], ['status', 40]]) {
+      const v = text(body[k], max);
+      if (v !== undefined) m[k] = v || null;
+    }
+    if (Array.isArray(body.genres)) m.genres = body.genres.map((g) => String(g).trim()).filter(Boolean).slice(0, 100);
+    return m;
+  }
+
+  async function editApi(req, id) {
+    const p = parse(id);
+    const v = await current();
+    const it = p && p.ch === null && v && v.items.get(p.item);
+    if (!it) return NOT_FOUND();
+    const next = applyMeta({ ...it.manifest }, await req.json().catch(() => ({})));
+    const sealed = await sealString(it.key, enc.encode(JSON.stringify(next)), AD.meta(it.row.id));
+    await e2e(`/api/e2e/vaults/${encodeURIComponent(v.id)}/items/${encodeURIComponent(it.row.id)}/meta`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sealed }),
+    });
+    it.manifest = next;
+    return json({ ok: true });
+  }
+
+  /** The viewer's stars (PUT/DELETE /api/ratings/<vault series>), kept with their progress, encrypted. */
+  async function ratingApi(req, id) {
+    const p = parse(id);
+    const v = await current();
+    const it = p && p.ch === null && v && v.items.get(p.item);
+    if (!it) return NOT_FOUND();
+    if (req.method === 'DELETE') delete it.state.rating;
+    else {
+      const stars = Number((await req.json().catch(() => ({}))).stars);
+      if (!Number.isInteger(stars) || stars < 1 || stars > 5) return json({ error: 'bad_request' }, 400);
+      it.state.rating = stars;
+    }
+    await saveState(v, it);
+    return json({ ok: true, ...(it.state.rating ? { stars: it.state.rating } : {}) });
+  }
+
   async function bookApi(req, id, sub) {
     const p = parse(id);
     const v = await current();
@@ -332,10 +381,11 @@
     const sort = String(body.sort || '');
     if (/^unread/i.test(sort)) all.sort((a, b) => b.booksUnreadCount - a.booksUnreadCount);
     else if (/^chapters/i.test(sort)) all.sort((a, b) => b.booksCount - a.booksCount);
+    else if (/^rating/i.test(sort)) all.sort((a, b) => (b.yomi.rating || 0) - (a.yomi.rating || 0));
     else if (/created|added|new/i.test(sort)) all.sort((a, b) => b.created.localeCompare(a.created));
     else if (/read/i.test(sort)) all.sort((a, b) => (b.lastReadAt || '').localeCompare(a.lastReadAt || ''));
     else all.sort((a, b) => a.name.localeCompare(b.name));
-    if (/desc/i.test(sort) && !/created|added|new|read|chapters/i.test(sort)) all.reverse();
+    if (/desc/i.test(sort) && !/created|added|new|read|chapters|rating/i.test(sort)) all.reverse();
     return json(page(all, Number(body.page) || 0, Number(body.size) || 40));
   }
 
@@ -375,7 +425,7 @@
   }
 
   // For web/test/vaultWorker.test.ts: the shapes and the filter, checked against web/lib/types.ts and the server's rules.
-  self.__uchiyomiVaultShapes = { seriesDto, bookDto, pageDto, page, parse, matches };
+  self.__uchiyomiVaultShapes = { seriesDto, bookDto, pageDto, page, parse, matches, applyMeta };
 
   self.addEventListener('fetch', (e) => {
     const req = e.request;
@@ -386,6 +436,8 @@
     let m;
     if ((m = /^\/api\/series\/(vlt-[^/]+)(?:\/([^/]+))?\/?$/.exec(path))) return e.respondWith(seriesApi(req, m[1], m[2] || null, url).catch(() => NOT_FOUND()));
     if ((m = /^\/api\/books\/(vlt-[^/]+)(?:\/([^/]+))?\/?$/.exec(path))) return e.respondWith(bookApi(req, m[1], m[2] || null).catch(() => NOT_FOUND()));
+    if ((m = /^\/api\/admin\/series\/(vlt-[^/]+)\/meta\/?$/.exec(path)) && req.method === 'PUT') return e.respondWith(editApi(req, m[1]).catch(() => json({ error: 'vault_series' }, 500)));
+    if ((m = /^\/api\/ratings\/(vlt-[^/]+)\/?$/.exec(path)) && (req.method === 'PUT' || req.method === 'DELETE')) return e.respondWith(ratingApi(req, m[1]).catch(() => json({ error: 'vault_series' }, 500)));
     if (path === '/api/library/bulk/read' && req.method === 'POST') return e.respondWith(bulkRead(req).catch(() => json({ error: 'vault_series' }, 500)));
     if (/^\/api\/(bookmarks|notes)\/?$/.test(path) && (url.searchParams.get('seriesId') || '').startsWith(PREFIX)) return e.respondWith(json({ content: [] }));
     if ((m = /^\/img\/series\/(vlt-[^/]+)\/thumb\/?$/.exec(path))) return e.respondWith(image(m[1], 'cover').catch(() => new Response(null, { status: 404 })));
