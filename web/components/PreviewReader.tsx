@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { msgOf } from '@/components/ConfirmDialog';
 import { IcChevronLeft, IcX } from '@/components/icons';
@@ -121,7 +121,7 @@ export function PreviewReader({ source, sourceName, sourceId, title, onClose, on
         {tr('Reading from {source}. Nothing is added to your library and no progress is kept.', { source: sourceName })}
       </p>
       {list.isPending && <p className="py-8 text-center text-sm text-fog-500">{tr('Loading…')}</p>}
-      {list.isError && <p className="py-8 text-center text-sm text-rose-400">{msgOf(list.error, tr('That source would not answer.'))}</p>}
+      {list.isError && <Failed text={msgOf(list.error, tr('That source would not answer.'))} onRetry={() => list.refetch()} busy={list.isFetching} />}
       {list.isSuccess && chapters.length === 0 && <p className="py-8 text-center text-sm text-fog-500">{tr('No chapters listed.')}</p>}
       <div className="space-y-1">
         {chapters.map((c) => (
@@ -178,12 +178,14 @@ export function PreviewReader({ source, sourceName, sourceId, title, onClose, on
 function PreviewPages({ source, sourceId, number, prev, next, onPick }: {
   source: string; sourceId: string; number: number; prev?: number; next?: number; onPick: (n: number) => void;
 }) {
-  const count = useQuery({
-    queryKey: ['preview-count', source, sourceId, number],
-    queryFn: () => api<{ count: number }>(previewCountUrl(source, sourceId, number)),
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
+  const count = useQuery(countQuery(source, sourceId, number));
+  // The next chapter's page list, asked for while this one is read: the server keeps it (and the source is asked
+  // once), so Next chapter opens on pages instead of on a Loading… that waits on the source's page list.
+  const qc = useQueryClient();
+  useEffect(() => {
+    if (next === undefined || !count.isSuccess) return;
+    void qc.prefetchQuery(countQuery(source, sourceId, next));
+  }, [qc, source, sourceId, next, count.isSuccess]);
   const top = useRef<HTMLDivElement>(null);
   // Back to the top on every chapter change: continuing a scroll into another chapter reads as a jump.
   useEffect(() => { top.current?.scrollIntoView({ block: 'start' }); }, [number]);
@@ -191,7 +193,7 @@ function PreviewPages({ source, sourceId, number, prev, next, onPick }: {
   return (
     <div ref={top}>
       {count.isPending && <p className="py-16 text-center text-sm text-fog-500">{tr('Loading…')}</p>}
-      {count.isError && <p className="py-16 text-center text-sm text-rose-400">{msgOf(count.error, tr('That chapter would not load.'))}</p>}
+      {count.isError && <Failed text={msgOf(count.error, tr('That chapter would not load.'))} onRetry={() => count.refetch()} busy={count.isFetching} />}
       {Array.from({ length: count.data?.count ?? 0 }, (_, i) => (
         <PreviewPage key={`${number}:${i}`} src={previewPageUrl(source, sourceId, number, i)} index={i} />
       ))}
@@ -205,14 +207,50 @@ function PreviewPages({ source, sourceId, number, prev, next, onPick }: {
   );
 }
 
+const countQuery = (source: string, sourceId: string, number: number) => ({
+  queryKey: ['preview-count', source, sourceId, number],
+  queryFn: () => api<{ count: number }>(previewCountUrl(source, sourceId, number)),
+  staleTime: 5 * 60_000,
+  // A refusal is an answer; a retry is offered by hand instead (Failed below).
+  retry: false,
+});
+
+/** A load that failed, and a way to ask again: a source that hiccuped once usually answers the second time. */
+function Failed({ text, onRetry, busy }: { text: string; onRetry: () => void; busy?: boolean }) {
+  return (
+    <div className="py-12 text-center">
+      <p className="text-sm text-rose-400">{text}</p>
+      <button type="button" onClick={onRetry} disabled={busy}
+        className="mt-3 rounded-full border border-ink-700 px-4 py-2 text-sm text-fog-300 hover:bg-ink-800 disabled:opacity-50">{tr('Try again')}</button>
+    </div>
+  );
+}
+
+/**
+ * One page. A failure is asked again once on its own after a moment (a busy source, a CDN blip -- the usual
+ * reasons), and after that by a tap, so one bad page is not a hole in the chapter until the preview is reopened.
+ * Each attempt gets its own address, or the browser would answer the retry with the failure it just had.
+ */
 function PreviewPage({ src, index }: { src: string; index: number }) {
   const [state, setState] = useState<'loading' | 'ok' | 'failed'>('loading');
-  if (state === 'failed') {
-    return <p className="py-10 text-center text-xs text-fog-500">{tr('Page {n} could not be loaded.', { n: index + 1 })}</p>;
+  const [attempt, setAttempt] = useState(0);
+  const retry = () => { setAttempt((a) => a + 1); setState('loading'); };
+  useEffect(() => {
+    if (state !== 'failed' || attempt > 0) return;
+    const t = setTimeout(retry, 1500);
+    return () => clearTimeout(t);
+  }, [state, attempt]);
+  if (state === 'failed' && attempt > 0) {
+    return (
+      <button type="button" onClick={retry} className="block w-full py-10 text-center text-xs text-fog-500 hover:text-fog-300">
+        {tr('Page {n} could not be loaded.', { n: index + 1 })} <span className="underline">{tr('Try again')}</span>
+      </button>
+    );
   }
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={src} alt="" loading="lazy" decoding="async" onLoad={() => setState('ok')} onError={() => setState('failed')}
-      className={`block w-full ${state === 'loading' ? 'min-h-[60vh] bg-ink-900/40' : ''}`} />
+    <img key={attempt} src={attempt ? `${src}&r=${attempt}` : src} alt="" loading="lazy" decoding="async"
+      onLoad={() => setState('ok')} onError={() => setState('failed')}
+      className={`block w-full ${state !== 'ok' ? 'min-h-[60vh] bg-ink-900/40' : ''}`} />
   );
 }

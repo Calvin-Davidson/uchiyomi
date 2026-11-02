@@ -20,6 +20,7 @@ import { solverMayVisit } from '../lib/sources/imageHosts';
 import { getSource, isSwAdapterId } from '../lib/sources';
 import type { SourceAdapter, SourceChapter } from '../lib/sources/types';
 import { fetchPages } from '../lib/downloader';
+import { paceFor } from '../lib/pace';
 import { previewPageList, copyPageList, isRefusal } from './sources';
 import { assertPublicHost, isBlockedHost, BlockedAddress } from '../lib/ssrfGuard';
 import { fetchPublicHop } from '../lib/publicConnection';
@@ -888,16 +889,47 @@ export const serveLibBookPage = async (req: FastifyRequest, reply: FastifyReply,
 const PREVIEW_MAX_BYTES = 15 * 1024 * 1024;
 /** The pause between two preview pages from one source, as the downloader paces its own. */
 const PREVIEW_GAP_MS = 250;
-const previewChains = new Map<string, Promise<unknown>>();
-/** One preview page at a time per source, PREVIEW_GAP_MS apart: an <img> per page must not become a burst. */
-function previewGate<T>(sourceId: string, fn: () => Promise<T>): Promise<T> {
-  const prev = previewChains.get(sourceId) ?? Promise.resolve();
-  const next = prev.catch(() => {}).then(async () => {
-    try { return await fn(); } finally { await new Promise((r) => setTimeout(r, PREVIEW_GAP_MS)); }
-  });
-  previewChains.set(sourceId, next);
-  void next.catch(() => {}).finally(() => { if (previewChains.get(sourceId) === next) previewChains.delete(sourceId); });
-  return next;
+/** Whether the browser has dropped this request (an <img> removed or scrolled away, the preview closed). */
+const clientGone = (req: FastifyRequest): boolean => !!(req.raw.destroyed || req.raw.socket?.destroyed);
+/** Raised for a page whose reader left before its turn came: nothing was asked of the source. */
+class PreviewGone extends Error {}
+/** Per source; kept (one small entry per source ever previewed) so the gap after the last reply still holds. */
+const previewLanes = new Map<string, { busy: number; lastStart: number; lastDone: number; waiting: (() => void)[] }>();
+/**
+ * Preview pages from one source, paced the way the downloader paces that source (lib/pace.ts paceFor): a
+ * scraped site one page at a time, PREVIEW_GAP_MS apart, so an <img> per page does not become a burst; an
+ * extension source as wide as it declares (the engine paces the site itself); a source that answered 429
+ * lately one at a time at its doubled gap. This used to be one page at a time for every source, which made an
+ * extension chapter of 40 pages forty round trips end to end.
+ *
+ * `gone` is asked when a page's turn comes: a reader who scrolled past, opened another chapter or closed the
+ * preview has dropped the request, and fetching it anyway put a whole abandoned chapter in front of the pages
+ * they are now looking at -- which is how a preview "stopped loading".
+ */
+async function previewGate<T>(src: SourceAdapter, fn: () => Promise<T>, gone: () => boolean = () => false): Promise<T> {
+  const { gap, workers } = paceFor(src, { gapMs: PREVIEW_GAP_MS });
+  let lane = previewLanes.get(src.id);
+  if (!lane) previewLanes.set(src.id, lane = { busy: 0, lastStart: -Infinity, lastDone: -Infinity, waiting: [] });
+  const l = lane;
+  // A freed slot is handed straight to the longest waiter (finally below), so pages are fetched in the order asked.
+  if (l.busy >= workers) await new Promise<void>((r) => l.waiting.push(r));
+  else l.busy++;
+  let ran = false;
+  try {
+    if (gone()) throw new PreviewGone();
+    // From the later of the previous start and its reply, as the downloader measures it: a slow site is not
+    // asked again until the gap after it answered.
+    const wait = Math.max(l.lastStart, l.lastDone) + gap - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    if (gone()) throw new PreviewGone();
+    l.lastStart = Date.now();
+    ran = true;
+    return await fn();
+  } finally {
+    if (ran) l.lastDone = Date.now();
+    const next = l.waiting.shift();
+    if (next) next(); else l.busy--;
+  }
 }
 
 /**
@@ -1155,7 +1187,7 @@ export default async function imageRoutes(app: FastifyInstance) {
     if (isRefusal(r)) return reply.code(r.code).send({ error: r.error });
     const idx = Number(i);
     if (!Number.isInteger(idx) || idx < 0 || idx >= r.urls.length) return reply.code(404).send({ error: 'not_found' });
-    const buf = await previewGate(r.src.id, () => previewPageBytes(r.src, r.chapter, r.urls, idx)).catch(() => null);
+    const buf = await previewGate(r.src, () => previewPageBytes(r.src, r.chapter, r.urls, idx), () => clientGone(req)).catch(() => null);
     const type = buf && buf.length <= PREVIEW_MAX_BYTES ? sniffImage(buf) : null;
     if (!buf || !type) return reply.code(502).send({ error: 'unavailable' });
     reply.header('cache-control', 'private, no-store');
@@ -1175,7 +1207,7 @@ export default async function imageRoutes(app: FastifyInstance) {
     if (isRefusal(r)) return reply.code(r.code).send({ error: r.error });
     const idx = Number(i);
     if (!Number.isInteger(idx) || idx < 0 || idx >= r.urls.length) return reply.code(404).send({ error: 'not_found' });
-    const buf = await previewGate(r.src.id, () => previewPageBytes(r.src, r.chapter, r.urls, idx)).catch(() => null);
+    const buf = await previewGate(r.src, () => previewPageBytes(r.src, r.chapter, r.urls, idx), () => clientGone(req)).catch(() => null);
     const type = buf && buf.length <= PREVIEW_MAX_BYTES ? sniffImage(buf) : null;
     if (!buf || !type) return reply.code(502).send({ error: 'unavailable' });
     reply.header('cache-control', 'private, no-store');

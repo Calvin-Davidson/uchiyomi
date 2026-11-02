@@ -1055,6 +1055,7 @@ export function clearDetailCache(): void {
   detailCache.clear();
   detailInflight.clear();
   previewPages.clear();
+  previewPagesInflight.clear();
 }
 
 /**
@@ -1092,6 +1093,7 @@ export const isRefusal = (r: object): r is PreviewRefusal => 'code' in r && 'err
 const PREVIEW_PAGES_TTL = 10 * 60_000;
 const PREVIEW_PAGES_MAX = 200;
 const previewPages = new Map<string, { at: number; urls: string[] }>();
+const previewPagesInflight = new Map<string, Promise<string[] | null>>();
 
 export async function previewChapters(ctx: ViewCtx, source: string | undefined, sourceId: string | undefined):
   Promise<{ src: SourceAdapter; series: SourceSeries | null; chapters: SourceChapter[] } | PreviewRefusal> {
@@ -1119,19 +1121,36 @@ export async function previewPageList(ctx: ViewCtx, source: string | undefined, 
   const n = Number(number);
   const chapter = Number.isFinite(n) ? r.chapters.find((c) => c.number === n) : undefined;
   if (!chapter) return refused(404, 'not_listed', 'That chapter is not in the listing.');
-  const key = `${r.src.id}\u0000${chapter.sourceId}`;
-  const hit = previewPages.get(key);
-  if (hit && Date.now() - hit.at < PREVIEW_PAGES_TTL) return { src: r.src, chapter, urls: hit.urls };
-  const urls = await withTimeout(r.src.getPageUrls(chapter.sourceId), budgetFor(r.src, 20_000)).catch((e) => {
-    // #115: page-stage evidence for Health, never a cooldown; our own timeout is not evidence.
-    if (!e?.selfTimeout) void noteStage(r.src.id, 'pages', 'fail', { error: String(e?.message || 'getPageUrls failed') });
-    return null;
-  });
-  if (urls?.length) void noteStage(r.src.id, 'pages', 'ok');
-  if (!urls?.length) return refused(502, 'unreadable', 'That chapter would not load from the source.');
-  if (previewPages.size >= PREVIEW_PAGES_MAX) previewPages.delete(previewPages.keys().next().value!);
-  previewPages.set(key, { at: Date.now(), urls });
+  const urls = await chapterPageUrls(r.src, chapter.sourceId);
+  if (!urls) return refused(502, 'unreadable', 'That chapter would not load from the source.');
   return { src: r.src, chapter, urls };
+}
+/**
+ * One chapter's page list from the cache, or from the source once however many ask at the same moment: the page
+ * count and the first few <img>s of a chapter arrive together, and each used to ask the source for the list itself.
+ * Null when the source gave none (not cached, so the next ask tries again).
+ */
+async function chapterPageUrls(src: SourceAdapter, chapterId: string): Promise<string[] | null> {
+  const key = `${src.id}\u0000${chapterId}`;
+  const hit = previewPages.get(key);
+  if (hit && Date.now() - hit.at < PREVIEW_PAGES_TTL) return hit.urls;
+  const flying = previewPagesInflight.get(key);
+  if (flying) return flying;
+  const p = (async () => {
+    const urls = await withTimeout(src.getPageUrls(chapterId), budgetFor(src, 20_000)).catch((e) => {
+      // #115: page-stage evidence for Health, never a cooldown; our own timeout is not evidence.
+      if (!e?.selfTimeout) void noteStage(src.id, 'pages', 'fail', { error: String(e?.message || 'getPageUrls failed') });
+      return null;
+    });
+    if (!urls?.length) return null;
+    void noteStage(src.id, 'pages', 'ok');
+    if (previewPages.size >= PREVIEW_PAGES_MAX) previewPages.delete(previewPages.keys().next().value!);
+    previewPages.set(key, { at: Date.now(), urls });
+    return urls;
+  })();
+  previewPagesInflight.set(key, p);
+  void p.finally(() => { if (previewPagesInflight.get(key) === p) previewPagesInflight.delete(key); });
+  return p;
 }
 /**
  * The page list of ONE named copy of a chapter of a library series, for the compare view (#241, @Squeaks72): unlike a
@@ -1154,17 +1173,8 @@ export async function copyPageList(seriesId: string, source: string | undefined,
   if (await isDisabled(src.id).catch(() => false)) return refused(403, 'disabled', `${src.name} is switched off.`);
   if (await blockedNow(src.id).catch(() => null)) return refused(429, 'cooldown', `${src.name} asked us to slow down. Try again later.`);
   const chapter = { sourceId: chapterId, number: 0 } as SourceChapter;
-  const key = `${src.id}\u0000${chapterId}`;
-  const hit = previewPages.get(key);
-  if (hit && Date.now() - hit.at < PREVIEW_PAGES_TTL) return { src, chapter, urls: hit.urls };
-  const urls = await withTimeout(src.getPageUrls(chapterId), budgetFor(src, 20_000)).catch((e) => {
-    if (!e?.selfTimeout) void noteStage(src.id, 'pages', 'fail', { error: String(e?.message || 'getPageUrls failed') });
-    return null;
-  });
-  if (urls?.length) void noteStage(src.id, 'pages', 'ok');
-  if (!urls?.length) return refused(502, 'unreadable', 'That chapter would not load from the source.');
-  if (previewPages.size >= PREVIEW_PAGES_MAX) previewPages.delete(previewPages.keys().next().value!);
-  previewPages.set(key, { at: Date.now(), urls });
+  const urls = await chapterPageUrls(src, chapterId);
+  if (!urls) return refused(502, 'unreadable', 'That chapter would not load from the source.');
   return { src, chapter, urls };
 }
 const latestCache = new Map<string, { at: number; items: SourceSeries[] }>();
