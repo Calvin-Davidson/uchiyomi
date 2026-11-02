@@ -295,6 +295,13 @@ The source's name comes from comment tags at the top of the file, so loading a s
 (`#` in place of `//` in Python.) Scripts cannot use the Cloudflare solver; a site behind it needs a pack or an
 extension.
 
+Languages (a working example of each is in [`docs/script-sources/`](script-sources/)):
+
+- **C#** (`.cs`): a .NET 10 file-based app (top-level statements, `args`, no project file), run as
+  `dotnet run <file> -- …`; `SCRIPT_DOTNET` names another `dotnet`. It is built once in the background when the source
+  loads, and a call may take 60 s by default (`@timeout` to change). Needs the .NET 10 SDK, which the Docker image does
+  not include.
+
 **Progressive search.** A cross-source Discover search returns after `SEARCH_FIRST_ANSWER_MS` (default
 `6000`) at the latest, or `SEARCH_GRACE_MS` (`1500`) after its first useful answer, while unfinished sources
 keep filling the same cached entry. `SEARCH_SOURCE_MS` (`20000`, plus the solver allowance when needed) is
