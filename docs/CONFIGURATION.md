@@ -295,6 +295,11 @@ The source's name comes from comment tags at the top of the file, so loading a s
 (`#` in place of `//` in Python.) Scripts cannot use the Cloudflare solver; a site behind it needs a pack or an
 extension.
 
+Languages (a working example of each is in [`docs/script-sources/`](script-sources/)):
+
+- **Python** (`.py`): run as `python3 -u <file> …` (`python` on Windows); `SCRIPT_PYTHON` names another interpreter.
+  The Docker image does not include Python; add it in an image of your own (`RUN apk add --no-cache python3`).
+
 **Progressive search.** A cross-source Discover search returns after `SEARCH_FIRST_ANSWER_MS` (default
 `6000`) at the latest, or `SEARCH_GRACE_MS` (`1500`) after its first useful answer, while unfinished sources
 keep filling the same cached entry. `SEARCH_SOURCE_MS` (`20000`, plus the solver allowance when needed) is
