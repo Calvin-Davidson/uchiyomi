@@ -261,6 +261,40 @@ plugin and hit **Admin → Sources → Add sources → Reload sources** (`POST /
 With no sites added, no extensions installed and no pack mounted, Uchiyomi is just a clean reader for the library
 you already own.
 
+**Script sources.** A source can also be one plain script file, with nothing to compile: put it in
+`SOURCES_DIR/scripts/` (or `SCRIPT_SOURCES_DIR`) and reload. The languages this build runs are listed below; each
+needs its runtime installed where the server runs. A script is started once per call and answers on stdout with
+JSON:
+
+| Call | Prints |
+|---|---|
+| `<script> search <query> <page>` | `[series]` |
+| `<script> series <seriesId>` | `series` or `null` |
+| `<script> chapters <seriesId>` | `[chapter]` |
+| `<script> pages <chapterId>` | `["https://…/1.jpg", …]` |
+| `<script> latest <page>` / `popular <page>` | `[series]` — only when the header says `@supports latest popular` |
+
+A series is `{ "id", "title", "summary", "status", "genres", "author", "cover", "url" }` (only `id` and `title`
+required), a chapter `{ "id", "number", "title", "lang", "publishedAt", "scanlator" }` (only `id` and `number`). A
+non-zero exit fails the call, and the last line the script wrote to stderr is the error shown. Only the last line
+of stdout has to be the JSON, so debug prints above it are fine.
+
+The source's name comes from comment tags at the top of the file, so loading a script never runs it:
+
+```
+// @id        example            (default: the file name)
+// @name      Example
+// @lang      en
+// @base      https://example.org
+// @referer   https://example.org/   (sent with page images)
+// @supports  latest popular
+// @timeout   30000                  (ms per call)
+// @concurrency 2                    (processes of this script at once)
+```
+
+(`#` in place of `//` in Python.) Scripts cannot use the Cloudflare solver; a site behind it needs a pack or an
+extension.
+
 **Progressive search.** A cross-source Discover search returns after `SEARCH_FIRST_ANSWER_MS` (default
 `6000`) at the latest, or `SEARCH_GRACE_MS` (`1500`) after its first useful answer, while unfinished sources
 keep filling the same cached entry. `SEARCH_SOURCE_MS` (`20000`, plus the solver allowance when needed) is

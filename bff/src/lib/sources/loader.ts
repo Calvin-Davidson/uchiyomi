@@ -7,6 +7,7 @@ import { join } from 'path';
 import { UNNUMBERED, unnumberedOf, type SourceAdapter, type SourceChapter, type SourceHost } from './types';
 import { cfGet, cfPost, cfSession } from './flaresolverr';
 import { learnImageHosts } from './imageHosts';
+import { scanScripts, scriptsDir } from './scripts/engine';
 
 const registry = new Map<string, SourceAdapter>();
 /** The ids a source pack in SOURCES_DIR registered (v0.54.0): what the sources overview calls a pack's source. */
@@ -98,6 +99,11 @@ export function loadSources(dir = process.env.SOURCES_DIR || '/sources'): { load
       for (const a of collect(mod)) if (registerAdapter(a)) { loaded++; any = true; fromPack.add(a.id); }
       if (!any) console.warn(`[sources] ${f}: no valid SourceAdapter export`);
     } catch (e) { console.warn(`[sources] failed to load ${f}: ${(e as Error)?.message}`); }
+  }
+  // Script sources (scripts/engine.ts): one plain C#/Python/JavaScript file each, run as a child process per call.
+  for (const a of scanScripts(scriptsDir(dir))) {
+    files++;
+    if (registerAdapter(a)) { loaded++; fromPack.add(a.id); }
   }
   return { loaded, files };
 }
