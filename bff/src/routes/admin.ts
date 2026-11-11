@@ -121,6 +121,7 @@ import { titlesFromBackup, entriesFromBackup, type BackupEntry } from '../lib/ta
 import { resolveAddScope, scopeSql, samePrivacyDomainSql, ContentScopeError, deleteAccountPreservingPrivate, type AddScope } from '../lib/contentScope';
 import { normalizeImportEntries, trackerLinksOf, importSkipKeys, type ImportEntry } from '../lib/importMetadata';
 import { linkSeries, seedTrackerFloor, rememberTrackerPrivacy, TOKEN_EXPIRED, TOKEN_REJECTED, TOKEN_UNREADABLE } from '../lib/trackers';
+import { markNumbers, LISTING_MARK_MAX } from '../lib/listingProgress';
 import { ADAPTERS, PROVIDERS, LIST_STATUSES, TRACKER_LIST_MAX, type Provider, type LibraryEntry } from '../lib/trackerProviders';
 import { open as unseal } from '../lib/secretbox';
 import { findingOf, runHealthChecks } from '../lib/health';
@@ -240,6 +241,7 @@ async function linkImportedSeries(
 ): Promise<boolean> {
   const links = trackerLinksOf(row);
   const conflicts = new Set(links.filter(l => links.some(o => o.provider === l.provider && o.externalId !== l.externalId)).map(l => l.provider));
+  const linkedProgress: number[] = [];
   const p = new Params();
   const sid = p.add(seriesId);
   const scoped = scopeSql('o', scope, p);
@@ -259,9 +261,28 @@ async function linkImportedSeries(
       linked = true;
     }
     if(primaryLinked) {
+      linkedProgress.push(link.progress);
       const old = backup ? await one<{ chapters: number }>('SELECT chapters FROM tracker_progress WHERE user_id=$1 AND series_id=$2 AND provider=$3',[userId,seriesId,link.provider]) : null;
       await seedTrackerFloor(userId,seriesId,link.provider,Math.max(link.progress,old?.chapters ?? 0));
     }
+  }
+  // The tracker count is also the imported reader's local chapter progress. Resolve it against chapters this
+  // server knows (downloaded rows and the source listing); markNumbers writes silent completion marks and does
+  // not create reading_events, so an imported backlog cannot inflate reading stats. The listing is the
+  // authority for chapters not downloaded here, and the cap keeps a large external count bounded.
+  const through = Math.max(0, ...linkedProgress);
+  if (through > 0) {
+    const chapters = await q<{ number: number }>(
+      `SELECT number FROM (
+         SELECT COALESCE(ov.number,b.number) AS number
+           FROM lib_books b LEFT JOIN book_overrides ov ON ov.book_id=b.id WHERE b.series_id=$1
+         UNION
+         SELECT number FROM series_listing WHERE series_id=$1
+       ) known
+       WHERE number > 0 AND number <= $2 ORDER BY number LIMIT $3`,
+      [seriesId, through, LISTING_MARK_MAX],
+    );
+    if (chapters.length) await markNumbers(userId, seriesId, chapters.map(chapter => Number(chapter.number))).catch(() => {});
   }
   return linked;
 }
