@@ -11,6 +11,8 @@ import { ProgressRing } from './ProgressRing';
 import { ContentScopePicker, useContentScope } from './ContentScopePicker';
 import { useAuth } from '@/lib/auth';
 import { getCurrentUser } from '@/lib/api';
+import { encryptedSeriesId } from '@/lib/encryptedMedia';
+import { EncryptedMediaKey, useMediaKey } from './EncryptedMedia';
 
 /** Run the files, saying how far along it is, and say how it went. */
 function useUpload(onDone: (run: UploadRun) => void) {
@@ -20,13 +22,13 @@ function useUpload(onDone: (run: UploadRun) => void) {
   const toast = useToast();
   const qc = useQueryClient();
   const [at, setAt] = useState<{ i: number; n: number } | null>(null);
-  const start = async (to: UploadTarget, files: File[], imageChapter?: string) => {
+  const start = async (to: UploadTarget, files: File[], imageChapter?: string, key?: CryptoKey) => {
     if (!files.length || !mounted.current || !ownerId || getCurrentUser() !== ownerId) return;
     setAt({ i: 0, n: imageChapter ? 1 : files.length });
     let run: UploadRun;
     if (imageChapter) {
       try {
-        const r = await uploadImageChapter(to, imageChapter, files, ownerId);
+        const r = await uploadImageChapter(to, imageChapter, files, ownerId, key);
         run = { done: 1, failed: r.indexed === false ? [tr('{name} was stored, but indexing is pending. Run a library scan before retrying.', { name: imageChapter })] : [], failedFiles: [], seriesId: r.seriesId ?? null };
       } catch (error) { run = { done: 0, failed: [uploadRefusal(error, imageChapter)], failedFiles: files.map(f => f.name), seriesId: null }; }
     } else run = await uploadAll(to, files, (i) => setAt({ i, n: files.length }), ownerId);
@@ -78,7 +80,9 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
   const imageInput = useRef<HTMLInputElement>(null), folderInput = useRef<HTMLInputElement>(null);
   const scope = useContentScope();
   const toast = useToast();
-  const [mode, setMode] = useState<'archives' | 'images'>('archives');
+  const [mode, setMode] = useState<'archives' | 'images'>(seriesId && encryptedSeriesId(seriesId) ? 'images' : 'archives');
+  const [encrypt, setEncrypt] = useState(false);
+  const key = useMediaKey();
   const [images, setImages] = useState<File[]>([]);
   const [chapter, setChapter] = useState('');
   const [title, setTitle] = useState('');
@@ -100,7 +104,10 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
   // failed goes into it rather than asking for its title again and being refused as taken.
   const into = seriesId || (!title.trim() && made ? made.id : '');
   const intoTitle = seriesId ? seriesTitle : made?.title;
-  const ready = (!!into || (!!title.trim() && scope.ready)) && !taken && (mode === 'images' ? images.length > 0 && !!chapter.trim() : files.length > 0) && !at;
+  const encrypted = into ? encryptedSeriesId(into) : encrypt;
+  const ready = (!!into || (!!title.trim() && scope.ready)) && !taken &&
+    (!encrypted || (!!key && mode === 'images' && (!!into || scope.visibility === 'private'))) &&
+    (mode === 'images' ? images.length > 0 && !!chapter.trim() : files.length > 0) && !at;
   const add = (more: File[]) => setFiles((had) => [...had, ...more.filter((f) => !had.some((h) => h.name === f.name))]
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
   const addImages = (more: File[]) => {
@@ -132,8 +139,22 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
       {taken && <p className="mt-1 text-xs text-red-400" role="alert">{tr('A series by that title is already here. Pick another title.')}</p>}</>}
 
       {!into && <div className="mt-3"><ContentScopePicker scope={scope} disabled={!!at} /></div>}
+      {!into && (encrypt || (scope.supported && scope.ready && scope.visibility === 'private')) && (
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={encrypt} disabled={!!at || !globalThis.crypto?.subtle} onChange={e => {
+            setEncrypt(e.target.checked);
+            if (e.target.checked) setMode('images');
+          }} />
+          {tr('End-to-end encrypt pages and cover')}
+        </label>
+      )}
+      {encrypted && <div className="mt-3 space-y-2">
+        <p className="text-xs text-fog-400">{tr('Upload images or a chapter folder. The first page becomes the cover. Titles and reading progress stay visible to the server.')}</p>
+        {!into && scope.visibility !== 'private' && <p role="alert">{tr('Choose Private library to upload encrypted pages.')}</p>}
+        <EncryptedMediaKey allowGenerate={!into} disabled={!!at} />
+      </div>}
       <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label={tr('Upload format')}>
-        <button type="button" onClick={() => setMode('archives')} disabled={!!at} aria-pressed={mode === 'archives'} className={`chip text-xs ${mode === 'archives' ? 'chip-active' : ''}`}>{tr('Chapter files')}</button>
+        <button type="button" onClick={() => setMode('archives')} disabled={!!at || encrypted} aria-pressed={mode === 'archives'} className={`chip text-xs ${mode === 'archives' ? 'chip-active' : ''}`}>{tr('Chapter files')}</button>
         <button type="button" onClick={() => setMode('images')} disabled={!!at} aria-pressed={mode === 'images'} className={`chip text-xs ${mode === 'images' ? 'chip-active' : ''}`}>{tr('Images as one chapter')}</button>
       </div>
 
@@ -179,7 +200,11 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
       )}
       </>}
 
-      <button type="button" onClick={() => void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility }, mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined)} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
+      <button type="button" onClick={() => {
+        if (!ready || (encrypted && !key)) return;
+        void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility },
+          mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined, encrypted ? key ?? undefined : undefined);
+      }} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
         {at && <ProgressRing progress="spin" size={14} />}
         {at ? progressText(at) : tr('Upload')}
       </button>

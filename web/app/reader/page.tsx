@@ -36,6 +36,8 @@ import { guessMode, type AutoGuess } from '@/lib/readerAuto';
 import { translatedSrc, translating, type TranslateStatus } from '@/lib/readerTranslate';
 import { ReaderSettings } from '@/components/ReaderSettings';
 import { SectionTitle, useImgRetry, useRtl } from '@/components/ui';
+import { EncryptedMediaKey, useMediaKey } from '@/components/EncryptedMedia';
+import { encryptedBookId, setMediaKey } from '@/lib/encryptedMedia';
 import { PageGrid } from '@/components/PageGrid';
 import { PageCleanupPanel } from '@/components/PageCleanupPanel';
 import { ChapterSheet } from '@/components/ChapterSheet';
@@ -1280,6 +1282,7 @@ function ReaderInner() {
   const prevPos = useRef<{ ci: number } | null>(null);
   /** Bumped when a tap's page turn can no longer be taken back, so the progress below is read again. */
   const [turnSettled, setTurnSettled] = useState(0);
+  const mediaKey = useMediaKey();
   const sendProgress = useCallback((chId: string, sId: string, page: number, completed: boolean) => {
     const actor=user?.id;if(!actor || getCurrentUser()!==actor)return;
     // `at` is what lets the server refuse a stale write. The offline outbox always sent it; the live path
@@ -1310,6 +1313,7 @@ function ReaderInner() {
     if (!it) return;
     const ch = chapters[it.ci];
     if (!ch) return;
+    if (encryptedBookId(ch.id) && !mediaKey) return;
     // crossed forward into a new chapter → the departed chapter is finished, even if its last page was skipped
     const prev = prevPos.current;
     prevPos.current = { ci: it.ci };
@@ -1340,7 +1344,7 @@ function ReaderInner() {
     }, 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current, ready, flat.length, turnSettled]);
+  }, [current, ready, flat.length, turnSettled, mediaKey]);
 
   // ---- auto-scroll ----
   useEffect(() => {
@@ -1371,6 +1375,7 @@ function ReaderInner() {
     staleTime: 5 * 60 * 1000,
   });
   const activeChapter = chapters[flat[current]?.ci ?? 0];
+  const encryptedChapter = !!activeChapter && encryptedBookId(activeChapter.id);
   const pageActionsOnline = showPages && serverReachableHint();
   // Paged mode has no strip between chapters: crossing into another one says so, briefly, so a chapter with no title page is still
   // plainly a new chapter. (The webtoon column has its own divider.) Not on the first chapter opened, and not while the chapter's
@@ -2122,6 +2127,7 @@ function ReaderInner() {
     ];
     if (chapterRefs.length > 0) items.push({ label: tr('Chapters'), onSelect: () => setShowChapters(true) });
     if (talkOn && activeChapter) items.push({ label: tr('Comments'), onSelect: () => setTalkFor(activeChapter.id) });
+    if (encryptedChapter && mediaKey) items.push({ label: tr('Lock encrypted media'), onSelect: () => setMediaKey(null) });
     if (prefs.mode === 'paged') {
       items.push({ label: prefs.spread ? tr('Read in single pages') : tr('Read in double spreads'), onSelect: () => setPref({ spread: !prefs.spread }), divider: true });
       // v0.89.0 (#262): this page's merge or split, as the reader settings sheet offers it.
@@ -2251,6 +2257,14 @@ function ReaderInner() {
     // `data-page` / `data-chapter`: what is being read, for the browser walks (test/e2e/v610Walk-reader.mjs) -- the counter
     // that says it lives in the auto-hiding footer. Nothing reads them in the app.
     <div className="fixed inset-0 z-40 bg-ink-950" data-page={pageInChapter || undefined} data-chapter={activeChapter?.id}>
+      {encryptedChapter && !mediaKey && (
+        <div className="absolute inset-0 z-[70] grid place-items-center bg-ink-950 p-6">
+          <div className="w-full max-w-md space-y-4">
+            <EncryptedMediaKey />
+            {seriesHref && <Link href={seriesHref} className="chip text-xs">{tr('Open the series page')}</Link>}
+          </div>
+        </div>
+      )}
       {readerMenu.element}
       <div className="pointer-events-none absolute inset-0 z-30 bg-black" style={{ opacity: 1 - prefs.brightness }} />
       {/* Ambient cover wash framing the reader: the look, by default. Its switch (Cover colour at the edges, #170)
@@ -2654,8 +2668,8 @@ function ReaderInner() {
            flag anyway. */
         <PageGrid title={activeChapter?.title || tr('Pages')} pages={gridPages} current={current}
           onPick={jumpTo} onClose={() => setShowPages(false)}
-          onManage={user?.role === 'admin' && pageActionsOnline && activeChapter ? () => { setShowPages(false); setCleanupFor({ id: activeChapter.id }); } : undefined}
-          onRestore={user?.role === 'admin' && pageActionsOnline && activeChapter ? (page) => { setShowPages(false); setCleanupFor({ id: activeChapter.id, restore: page }); } : undefined}
+          onManage={!encryptedChapter && user?.role === 'admin' && pageActionsOnline && activeChapter ? () => { setShowPages(false); setCleanupFor({ id: activeChapter.id }); } : undefined}
+          onRestore={!encryptedChapter && user?.role === 'admin' && pageActionsOnline && activeChapter ? (page) => { setShowPages(false); setCleanupFor({ id: activeChapter.id, restore: page }); } : undefined}
           onToggleJunk={!pageActionsOnline ? undefined : toggleJunk} />
       )}
       {cleanupFor && <PageCleanupPanel bookId={cleanupFor.id} initialRestore={cleanupFor.restore}

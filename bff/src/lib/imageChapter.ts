@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
 import { MAX_PAGE_BYTES } from './archiveCaps';
+import { ENCRYPTED_PAGE_MAGIC, isEncryptedPage } from './encryptedMedia';
 
 export const IMAGE_CHAPTER_MAX_PAGES = 2000;
 export class ImageChapterError extends Error {
@@ -18,7 +19,7 @@ const formats: Record<string, string> = { jpeg: 'jpg', png: 'png', webp: 'webp',
 const allowed = /\.(?:jpe?g|png|webp|gif|avif)$/i;
 
 /** STORE ZIP entries: pages are already compressed, and recompressing them wastes CPU and RAM. */
-export async function writeImageChapter(req: FastifyRequest, output: string, maxBytes: number, checkSpace: () => Promise<void>): Promise<number> {
+export async function writeImageChapter(req: FastifyRequest, output: string, maxBytes: number, checkSpace: () => Promise<void>, encrypted = false): Promise<number> {
   const staging = join(dirname(output), `.${basename(output)}.pages-${randomBytes(6).toString('hex')}`);
   const cancelled = new AbortController();
   const abort = () => cancelled.abort();
@@ -55,12 +56,22 @@ export async function writeImageChapter(req: FastifyRequest, output: string, max
       await pipeline(part.file, cap, createWriteStream(temporary, { flags: 'wx', mode: 0o600 }), { signal });
       if (part.file.truncated) throw new ImageChapterError('too_large', 413, page);
       if (!size) throw new ImageChapterError('invalid_page', 400, page);
-      let extension: string;
+      // The archive index uses the usual page suffix. The encrypted payload carries its image type.
+      let extension = 'png';
       try {
-        const metadata = await sharp(temporary, { limitInputPixels: 64 * 1024 * 1024 }).metadata();
-        extension = formats[metadata.format ?? ''];
-        if (!extension || (metadata.format === 'heif' && !/\.avif$/i.test(page))) throw new Error('unsupported image');
-        await sharp(temporary, { limitInputPixels: 64 * 1024 * 1024 }).resize({ width: 1, height: 1, fit: 'inside' }).toBuffer();
+        if (encrypted) {
+          const file = await fs.open(temporary, 'r');
+          try {
+            const header = Buffer.alloc(ENCRYPTED_PAGE_MAGIC.length);
+            await file.read(header, 0, header.length, 0);
+            if (!isEncryptedPage(header, size)) throw new Error('invalid encrypted page');
+          } finally { await file.close(); }
+        } else {
+          const metadata = await sharp(temporary, { limitInputPixels: 64 * 1024 * 1024 }).metadata();
+          extension = formats[metadata.format ?? ''];
+          if (!extension || (metadata.format === 'heif' && !/\.avif$/i.test(page))) throw new Error('unsupported image');
+          await sharp(temporary, { limitInputPixels: 64 * 1024 * 1024 }).resize({ width: 1, height: 1, fit: 'inside' }).toBuffer();
+        }
       } catch { throw new ImageChapterError('invalid_page', 400, page); }
       await checkSpace();
       const name = Buffer.from(`${String(count).padStart(5, '0')}.${extension}`);

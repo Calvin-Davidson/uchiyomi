@@ -365,7 +365,7 @@ export function ReaderImg({ src, alt, className, style, filter, onLoaded, onRetr
     );
   }
   // eslint-disable-next-line @next/next/no-img-element
-  return <img ref={ref} src={shown} alt={alt} className={className} style={filter ? { ...style, filter } : style} decoding="async" onError={onError}
+  return <img ref={ref} src={shown || undefined} alt={alt} className={className} style={filter ? { ...style, filter } : style} decoding="async" onError={onError}
     onLoad={onLoaded ? (e) => onLoaded(e.currentTarget) : undefined} />;
 }
 

@@ -13,6 +13,7 @@ import { libraryChanged } from '../lib/discoverIdentity';
 import { deleteSeries, restoreSeries, deleteSeriesFiles, forgetSeries } from '../lib/libraryAdmin';
 import { DL_ROOT } from '../lib/library';
 import { claimPrivateContentChange } from '../lib/privateFence';
+import { encryptedSeriesId } from '../lib/encryptedMedia';
 
 /** Root onSend hook. Implicit caches must not retain a response containing private library data. */
 export async function privateResponseHeaders(req: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -113,7 +114,7 @@ export async function privateLibraryRoutes(app: FastifyInstance): Promise<void> 
     if (!(await seriesVisible(id, await viewCtxFor(uid, roleOf(req))))) return reply.code(404).send({ error: 'not_found' });
     const row = await one<{ is_private: boolean; owner_user_id: string | null; work_id: string | null; folder: string }>('SELECT is_private,owner_user_id,work_id,folder FROM lib_series WHERE id=$1', [id]);
     return { isPrivate: row!.is_private, owner: row!.owner_user_id === uid,
-      canChange: privateBackendSupported() && row!.owner_user_id === uid && !row!.work_id && privateFolderOwner(row!.folder) === uid };
+      canChange: !encryptedSeriesId(id) && privateBackendSupported() && row!.owner_user_id === uid && !row!.work_id && privateFolderOwner(row!.folder) === uid };
   });
   app.put('/api/series/:id/privacy', async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -124,6 +125,7 @@ export async function privateLibraryRoutes(app: FastifyInstance): Promise<void> 
     const currentScope=await scopeForSeries(ctx,id,{write:true});
     if (!currentScope) return reply.code(404).send({ error: 'not_found' });
     if(currentScope.ownerUserId!==uid)return reply.code(403).send({error:'forbidden'});
+    if (encryptedSeriesId(id) && !body.data.isPrivate) return reply.code(409).send({ error: 'encryption_scope' });
     const privacyLease=claimPrivateContentChange(id);
     if(!privacyLease)return reply.code(409).send({error:'busy'});
     let writerClaim:FolderWriterClaim|null=null;

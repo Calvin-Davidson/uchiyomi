@@ -7,6 +7,7 @@ import { q } from '../lib/db';
 import { content } from '../lib/backend';
 import { viewCtxFor, type ViewCtx, hideAdult } from '../lib/visibility';
 import { authenticate, userIdOf, roleOf } from '../lib/auth';
+import { encryptedBookId } from '../lib/encryptedMedia';
 
 export default async function downloadRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate);
@@ -37,6 +38,7 @@ export default async function downloadRoutes(app: FastifyInstance) {
       book = null;
     }
     if (!book) return reply.code(404).send({ error: 'not_found' });
+    if (encryptedBookId(id)) return reply.code(409).send({ error: 'encrypted_media', message: 'Encrypted chapters can only be read online.' });
     // Gone, not missing: the row is a tombstone (lib/chapterCleanup.ts) and there are no pages to fetch.
     // 410 rather than an empty manifest, so the client can say why instead of saving a zero-page chapter.
     if (book.pruned) return reply.code(410).send({ error: 'pruned', message: 'This chapter\'s file was deleted from the server; there are no pages to download.' });

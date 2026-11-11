@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import { q, one, tx } from './db';
 import { privateScopeForFolder } from './contentScope';
 import { newSeriesId, newBookId } from './ids';
+import { encryptedSeriesId } from './encryptedMedia';
 import { env } from '../env';
 import { localArtFilename, refreshLocalSeriesArt } from './localSeriesArt';
 import { fingerprintChapter } from './fingerprint';
@@ -1144,7 +1145,7 @@ async function scanOnce(): Promise<ScanResult> {
             const read = numberByRule(f, rule);
             const b = params.length;
             tuples.push(`($${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 8},$${b + 9},$${b + 10},$${b + 11})`);
-            params.push(newBookId(), id, srcName, rel, read.number, f.replace(/\.(cbz|cbr|zip|rar|pdf|epub)$/i, ''),
+            params.push(newBookId(encryptedSeriesId(id)), id, srcName, rel, read.number, f.replace(/\.(cbz|cbr|zip|rar|pdf|epub)$/i, ''),
               st ? Math.floor(st.mtimeMs) : 0, root, rule, read.end, firstSeen);
             nBooks++;
           }

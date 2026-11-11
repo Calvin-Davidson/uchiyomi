@@ -1,7 +1,8 @@
 // Owned catalog backend: a drop-in for the `komga` client, returning Komga-shaped series/book DTOs from
 // the lib_* tables. enrichSeries/booksForUser in catalog.ts then add per-user state exactly as before.
 import { q, one } from './db';
-import { cbzPageDims, DL_ROOT, LIBRARY_ROOT, persistScan } from './library';
+import { cbzPageDims, cbzPages, DL_ROOT, LIBRARY_ROOT, persistScan } from './library';
+import { encryptedBookId, ENCRYPTED_MEDIA_TYPE } from './encryptedMedia';
 import { ViewCtx, Params, visible, browsable, ADULT_RATING } from './visibility';
 import { cleanDescription } from './htmlText';
 import { effectiveLang } from './seriesLang';
@@ -880,6 +881,17 @@ export const owned = {
     // so without this the reader would open a pruned chapter, lay out the right number of pages, and 404
     // every single one of them. No pages is the truth.
     if (r.pruned_at) return [];
+    if (encryptedBookId(id)) {
+      const file = path.join(r.root || LIBRARY_ROOT, r.file);
+      const contentVersion = await pageFileVersion(file).catch(() => undefined);
+      const names = await cbzPages(file).catch(() => []);
+      if (await pageFileVersion(file).catch(() => undefined) !== contentVersion) {
+        throw Object.assign(new Error('The chapter changed while its page list was being read. Reload it.'), { statusCode: 409 });
+      }
+      return names.map((fileName, i) => ({
+        number: i + 1, fileName, mediaType: ENCRYPTED_MEDIA_TYPE, width: null, height: null, sizeBytes: null, contentVersion,
+      }));
+    }
     // A page that is a placeholder in the file (lib/partial.ts) is marked here, inside bookPages rather than
     // on the route, so the offline manifest and the Komga-compatible API see it as well as the reader. It
     // stays a page -- it has a real image behind it and keeps its number -- the mark only says what the

@@ -6,6 +6,7 @@ import { useReduceEffects } from '@/lib/effects';
 import { withCoverBust } from '@/lib/coverBust';
 import { useLayer } from '@/lib/layers';
 import { t as tr } from '@/lib/i18n';
+import { useEncryptedImage } from './EncryptedMedia';
 
 /** Series backdrop: the BFF composites a wide, blurred, darkened full-bleed ambient from the series art
  *  (AniList banner or portrait cover), so we just render it object-cover — fills the hero on any aspect,
@@ -214,13 +215,14 @@ export function useImgRetry(src: string, autoTries = 1) {
   // A new page in the same slot must start from a clean slate, or a page that failed once leaves the next
   // one showing its retry button.
   useEffect(() => { setAttempt(0); }, [src]);
-  const failed = attempt > autoTries;
   const shown = attempt === 0 ? src : `${src}${src.includes('?') ? '&' : '?'}r=${attempt}`;
+  const image = useEncryptedImage(shown);
+  const failed = attempt > autoTries || image.failed;
   return {
-    src: failed ? '' : shown,
+    src: failed ? '' : image.src,
     failed,
     onError: useCallback(() => setAttempt((a) => a + 1), []),
-    retry: useCallback(() => setAttempt(0), []),
+    retry: useCallback(() => setAttempt(a => image.failed ? (a + 1) % (autoTries + 1) : 0), [autoTries, image.failed]),
   };
 }
 
@@ -257,12 +259,13 @@ export function Img({
   const [failed, setFailed] = useState(false);
   const [fellBack, setFellBack] = useState(false);
   const reduced = useReduceEffects();
-  const error = failed || !src; // no src at all is the same broken tile as a src that 404s
   // A cover changed on this device (#242, lib/coverBust.ts) is fetched again, not read from the browser's day-long copy.
   // Read as the card renders, never subscribed to: a card drawn after the change has it, and the series page and the
   // editor follow the art version. A store subscription in every Img of a Library grid was the price of re-drawing the
   // few cards on screen at the moment of a change.
   const shown = withCoverBust(fellBack && fallbackSrc ? fallbackSrc : src);
+  const image = useEncryptedImage(shown);
+  const error = failed || !src || image.locked || image.failed;
   const setError = () => {
     if (fallbackSrc && !fellBack && fallbackSrc !== src) { setFellBack(true); return; }
     setFailed(true);
@@ -288,7 +291,7 @@ export function Img({
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={shown}
+          src={image.src || undefined}
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"

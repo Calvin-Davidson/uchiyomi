@@ -4,6 +4,7 @@
 import { withAdult } from './adult';
 import { readOfflineIdentity, clearOfflineIdentity } from './offlineIdentity';
 import { desktopShell, noteServerDesktop } from './desktop';
+import { setMediaKey } from './encryptedMedia';
 
 /**
  * What a refresh attempt actually learned.
@@ -51,6 +52,7 @@ export function beginAccountTransition(): () => void {
   const transition = Symbol();
   accountTransitions.add(transition);
   identityEpoch++;
+  setMediaKey(null);
   return () => { accountTransitions.delete(transition); };
 }
 
@@ -61,7 +63,10 @@ export function getAccessToken() {
   return identityBlocked || accountTransitions.size ? null : accessToken;
 }
 export function setCurrentUser(id: string | null) {
-  if (id !== currentUserId) identityEpoch++;
+  if (id !== currentUserId) {
+    identityEpoch++;
+    setMediaKey(null);
+  }
   currentUserId = id;
 }
 export function getCurrentUser() {

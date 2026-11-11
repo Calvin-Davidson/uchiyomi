@@ -1,4 +1,5 @@
 import { sameContentScope, privateFolderOwner, reservedPrivateFolder } from './contentScope';
+import { encryptedSeriesId } from './encryptedMedia';
 // Destructive library operations: hide a series, restore it, and merge one into another.
 //
 // Deleting HIDES rather than erases. The id survives, so favourites, ratings, notes and -- above all --
@@ -92,7 +93,7 @@ export async function restoreSeries(id: string): Promise<{ ok: true }> {
 
 /** Why one series cannot be merged into another (mergeRefusal). The admin route answers each with its own status. */
 export type MergeRefusal =
-  | { refused: 'same_series' | 'not_found' | 'same_work' | 'different_scope' }
+  | { refused: 'same_series' | 'not_found' | 'same_work' | 'different_scope' | 'encrypted_media' }
   | { refused: 'deleted' | 'merged'; which: 'source' | 'target' };
 
 /**
@@ -106,6 +107,7 @@ export async function mergeRefusal(fromId: string, intoId: string): Promise<Merg
   const from = await getSeriesRow(fromId);
   const into = await getSeriesRow(intoId);
   if (!from || !into) return { refused: 'not_found' };
+  if (encryptedSeriesId(fromId) || encryptedSeriesId(intoId)) return { refused: 'encrypted_media' };
   if (!sameContentScope(from,into)) return {refused:'different_scope'};
   for (const [row, which] of [[from, 'source'], [into, 'target']] as const) {
     if (row.deleted_at) return { refused: 'deleted', which };
@@ -221,6 +223,7 @@ export async function mergeSeries(
     const from = locked.find((r) => r.id === fromId);
     const into = locked.find((r) => r.id === intoId);
     if (!from || !into) throw new MergeConflictError({ refused: 'not_found' });
+    if (encryptedSeriesId(fromId) || encryptedSeriesId(intoId)) throw new MergeConflictError({ refused: 'encrypted_media' });
     if (!sameContentScope(from,into)) throw new MergeConflictError({refused:'different_scope'});
     if (from.deleted_at) throw new MergeConflictError({ refused: 'deleted', which: 'source' });
     if (into.deleted_at) throw new MergeConflictError({ refused: 'deleted', which: 'target' });

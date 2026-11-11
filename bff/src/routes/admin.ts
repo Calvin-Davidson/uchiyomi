@@ -14,6 +14,7 @@ import { content as komga } from '../lib/backend';
 import { cacheBytes } from '../lib/imageCache';
 import { runtime } from '../lib/runtime';
 import { persistScan, libraryIdFor, libraryRows, LIBRARY_ROOT, DL_ROOT, setBookDates, setBookMeta } from '../lib/library';
+import { encryptedSeriesId } from '../lib/encryptedMedia';
 import { applyMoves, heldElsewhere, lockLibrarySaves, previewMoves, setFolders, storedFolders, underSql, LIBRARY_MAX_FOLDERS } from '../lib/libraryFolders';
 import { containedPath, allWritable, realContainedPath } from '../lib/fsGuard';
 import { deleteSeries, restoreSeries, mergeSeries, mergeRefusal, MergeConflictError, getSeriesRow, deleteSeriesFiles, renameSeriesFolder, forgetSeries, diskSpelling, deleteChapterFiles } from '../lib/libraryAdmin';
@@ -2415,6 +2416,7 @@ export default async function adminRoutes(app: FastifyInstance) {
         case 'deleted': return reply.code(400).send({ error: 'deleted', message: `The ${no.which} series is hidden. Restore it first.` });
         case 'merged': return reply.code(400).send({ error: 'merged', message: `The ${no.which} series was already merged into another one.` });
         case 'same_work': return reply.code(409).send({ error: 'same_work', message: 'These are two language editions of one work. Unlink one first if they really are the same edition.' });
+        case 'encrypted_media': return reply.code(409).send({ error: 'encrypted_media', message: 'Encrypted series cannot be merged.' });
       }
     }
     // One read, followed immediately by the synchronous multi-folder claim. Two separate awaits let a rename of the
@@ -3525,8 +3527,9 @@ export default async function adminRoutes(app: FastifyInstance) {
   // own pages -- nothing found online is shown or looked up for it (lib/seriesArt.ts FIRST_PAGE). Reset to automatic
   // takes it back.
   app.put('/api/admin/series/:id/art', { bodyLimit: ART_BODY_LIMIT }, async (req, reply) => {
-    if ((req.body as { kind?: unknown } | null)?.kind === 'logo') return changeTitleArtRoute(req, reply);
     const requestedId = (req.params as { id: string }).id;
+    if (encryptedSeriesId(requestedId)) return reply.code(409).send({ error: 'encrypted_media' });
+    if ((req.body as { kind?: unknown } | null)?.kind === 'logo') return changeTitleArtRoute(req, reply);
     const b = z.object({
       kind: z.enum(['cover', 'banner']),
       mode: z.enum(['url', 'upload', 'reset', 'first_page', 'source']),

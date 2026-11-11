@@ -18,6 +18,7 @@ import { visible, Params, viewCtxFor } from '../lib/visibility';
 import { actsAsAdmin, authenticate, userIdOf, roleOf } from '../lib/auth';
 import { logAudit } from '../lib/audit';
 import { DL_ROOT, persistScan, cbzPages, cbzEntry, libraryRows, libraryIdFor } from '../lib/library';
+import { encryptedSeriesId } from '../lib/encryptedMedia';
 import sharp from 'sharp';
 import { MIN_FREE_GB, freeBytes, sanitize } from '../lib/downloader';
 import { realContainedPath } from '../lib/fsGuard';
@@ -83,7 +84,7 @@ type Refusal = { code: number; error: string; message: string; page?: string };
 const refuse = (reply: FastifyReply, r: Refusal) => reply.code(r.code).send({ error: r.error, message: r.message, ...(r.page ? {page:r.page} : {}) });
 
 /** Stream the request body to <DL_ROOT>/<folder>/<name>; a refusal, or the stored path relative to DL_ROOT. */
-async function receive(req: FastifyRequest, folder: string, name: string, images = false): Promise<Refusal | { rel: string; bytes: number }> {
+async function receive(req: FastifyRequest, folder: string, name: string, images = false, encrypted = false): Promise<Refusal | { rel: string; bytes: number }> {
   const declared = Number(req.headers['content-length']);
   const limit = /^(pdf|rar|cbr)$/.test(extOf(name)) ? Math.min(UPLOAD_MAX_BYTES, EAGER_READER_CAP) : UPLOAD_MAX_BYTES;
   if (declared > limit) return { code: 413, error: 'too_large', message: `Files up to ${Math.round(limit / 2 ** 20)} MB can be uploaded.` };
@@ -126,16 +127,18 @@ async function receive(req: FastifyRequest, folder: string, name: string, images
       if (MIN_FREE_GB <= 0) return;
       const free = await freeBytes();
       if (free === null || free < MIN_FREE_GB * 2 ** 30 + 1024 * 1024) throw Object.assign(new Error('disk_full'), { diskFull: true });
-    });
+    }, encrypted);
     else await pipeline(req.body as Readable, cap, createWriteStream(tmp, { flags: 'wx' }));
     if (!bytes) throw Object.assign(new Error('empty'), { empty: true });
     if (!(await looksLike(tmp, extOf(name)))) throw Object.assign(new Error('bad_file'), { badFile: true });
     const pages = await cbzPages(tmp, name).catch(() => []);
     if (!pages.length || pages.length > 50000) throw Object.assign(new Error('bad_file'), { badFile: true });
-    try {
-      const page = await cbzEntry(tmp, pages[0], name);
-      await sharp(page, { limitInputPixels: 64 * 1024 * 1024 }).resize({ width: 1, height: 1, fit: 'inside' }).toBuffer();
-    } catch { throw Object.assign(new Error('bad_file'), { badFile: true }); }
+    if (!encrypted) {
+      try {
+        const page = await cbzEntry(tmp, pages[0], name);
+        await sharp(page, { limitInputPixels: 64 * 1024 * 1024 }).resize({ width: 1, height: 1, fit: 'inside' }).toBuffer();
+      } catch { throw Object.assign(new Error('bad_file'), { badFile: true }); }
+    }
     if (await realContainedPath(DL_ROOT, rel) !== abs) throw Object.assign(new Error('bad_file'), { badFile: true });
     // link is atomic and fails with EEXIST. A stat followed by rename can overwrite another writer on POSIX.
     try { await fs.link(tmp, abs); }
@@ -189,7 +192,8 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
     }
     const p = z.object({ title: z.string().trim().min(1).max(300).optional(), name: NAME,
       fresh: z.literal('1').optional(), seriesId: z.string().min(1).max(200).optional(), images: z.literal('1').optional(),
-      visibility: z.enum(['shared', 'private']).optional(), libraryId: z.string().min(1).max(100).optional() }).strict().safeParse(req.query);
+      visibility: z.enum(['shared', 'private']).optional(), libraryId: z.string().min(1).max(100).optional(),
+      encrypted: z.literal('1').optional() }).strict().safeParse(req.query);
     if (!p.success || !(p.data.seriesId ? !p.data.title && !p.data.fresh : p.data.title && p.data.fresh)) {
       return reply.code(400).send({ error: 'bad_request', message: 'Choose a new title or an existing series.' });
     }
@@ -216,6 +220,11 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
       throw error;
     }
     if (!scope) return reply.code(404).send({ error: 'not_found' });
+    const encrypted = p.data.encrypted === '1';
+    if ((encrypted && (!images || scope.visibility !== 'private')) ||
+        (known && encrypted !== encryptedSeriesId(known.id))) {
+      return reply.code(409).send({ error: 'encryption_scope' });
+    }
     let folder = known?.folder ?? await folderForScope(scope, originalFolder);
     if (!known) {
       const collision = new Params(), destination = collision.add(folder);
@@ -279,10 +288,10 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
         const allocated = await one<{ id: string }>(`INSERT INTO lib_series
           (id, source, title, folder, books_count, library_id, owner_user_id, is_private, library_pinned)
           VALUES ($1,$2,$3,$4,0,$5,$6,$7,$8) RETURNING id`,
-        [newSeriesId(), UPLOAD_FOLDER, p.data.title, folder, scope.libraryId, scope.ownerUserId, scope.visibility === 'private', pinned]);
+        [newSeriesId(encrypted), UPLOAD_FOLDER, p.data.title, folder, scope.libraryId, scope.ownerUserId, scope.visibility === 'private', pinned]);
         reservedSeries = allocated!.id;
       }
-      const r = await receive(req, folder, name, images);
+      const r = await receive(req, folder, name, images, encrypted);
       if ('error' in r) { await discardUnpublished(); return refuse(reply, r); }
       stored = true;
       let scanFailed = false;

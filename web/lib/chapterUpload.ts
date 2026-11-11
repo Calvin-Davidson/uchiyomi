@@ -1,7 +1,8 @@
 // Chapter files uploaded by hand (bff routes/upload.ts): for a series no source carries, whose chapters are
 // already on the admin's own disk. One file per request, the file itself as the body, one after another.
-import { api, ApiError, getCurrentUser } from './api';
+import { api, ApiError, getCurrentUser, img } from './api';
 import { t as tr } from './i18n';
+import { encryptPage, fetchEncryptedImage } from './encryptedMedia';
 
 /** What the scanner reads as a chapter, for the file picker. The server checks it again, and the bytes too. */
 export const CHAPTER_ACCEPT = '.cbz,.cbr,.zip,.rar,.pdf,.epub';
@@ -60,10 +61,29 @@ export function orderedImagePages(files: File[]): { pages: File[]; ignored: numb
   return { pages: pages.sort((a, b) => a.name.localeCompare(b.name, 'en', { numeric: true })), ignored: files.length - pages.length,
     multipleFolders: parents.size > 1, duplicateNames: new Set(pages.map(f => f.name.toLowerCase())).size !== pages.length };
 }
-export async function uploadImageChapter(to: UploadTarget, name: string, pages: File[], expectedOwnerId = getCurrentUser()): Promise<Uploaded> {
+export async function uploadImageChapter(to: UploadTarget, name: string, pages: File[], expectedOwnerId = getCurrentUser(), key?: CryptoKey): Promise<Uploaded> {
   const body = new FormData();
-  for (const page of pages) body.append('pages', page, page.name);
-  return api<Uploaded>(urlFor(to, name.replace(/\.cbz$/i, '') + '.cbz') + '&images=1', { method: 'POST', body, expectedOwnerId });
+  if (key && 'seriesId' in to) {
+    try { await fetchEncryptedImage(img.seriesThumb(to.seriesId), key); }
+    catch { throw new ApiError(409, JSON.stringify({ error: 'encryption_key' })); }
+  }
+  for (const page of pages) {
+    if (!key) {
+      body.append('pages', page, page.name);
+      continue;
+    }
+    if (!page.size || !isRasterPageHeader(new Uint8Array(await page.slice(0, 64).arrayBuffer()))) {
+      throw new ApiError(400, JSON.stringify({ error: 'invalid_page', page: page.name }));
+    }
+    if (page.size + 37 > 64 * 1024 * 1024) {
+      throw new ApiError(413, JSON.stringify({ error: 'too_large', message: 'Encrypted pages must be under 64 MB.' }));
+    }
+    const extension = page.name.split('.').pop()?.toLowerCase();
+    const type = extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : `image/${extension}`;
+    body.append('pages', await encryptPage(page, type, key), 'page.png');
+  }
+  return api<Uploaded>(urlFor(to, name.replace(/\.cbz$/i, '') + '.cbz') + (key ? '&images=1&encrypted=1' : '&images=1'),
+    { method: 'POST', body, expectedOwnerId });
 }
 
 /** A refusal in the reader's words: the route answers with a code and an English message. */
@@ -78,6 +98,8 @@ export function uploadRefusal(e: unknown, name: string): string {
     page = typeof b?.page === 'string' ? b.page : null;
   } catch { /* not JSON: the plain failure */ }
   if (code === 'taken') return tr('A series by that title is already here. Pick another title.');
+  if (code === 'encryption_key') return tr('Unlock with the recovery key used for this series before adding chapters.');
+  if (code === 'encryption_scope') return tr('Encrypted chapters can only be added to an encrypted private series.');
   if (code === 'exists') return tr('{name} is already in this series.', { name });
   if (code === 'bad_type') return tr('{name} is not a .cbz, .cbr, .zip, .rar, .pdf or .epub file.', { name });
   if (code === 'bad_file') return tr('{name} is not the kind of file its name says.', { name });

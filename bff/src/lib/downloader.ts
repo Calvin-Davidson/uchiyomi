@@ -24,6 +24,8 @@ import { fetchFollowingPublic, readCapped } from './safeFetch';
 import { isSwAdapterId } from './sources/suwayomi/sources';
 import { numKey } from './postingOrder';
 import { onEngineOrigin, suwayomiFetch } from './sources/suwayomi/client';
+import { reservedPrivateFolder } from './contentScope';
+import { one } from './db';
 
 /**
  * A title as a folder name.
@@ -355,6 +357,10 @@ export async function downloadChapter(
   input: DownloadInput,
   opts: { replace?: boolean; preflight?: DownloadPreflight } = {},
 ): Promise<{ file: string; pages: number } | null> {
+  if (reservedPrivateFolder(input.seriesFolder) && await one(
+    "SELECT 1 FROM lib_series WHERE folder = $1 AND id ~ '^s_e2ee_' AND deleted_at IS NULL",
+    [input.seriesFolder],
+  )) throw new Error('This series accepts only client-encrypted uploads.');
   const src = getSource(input.sourceId);
   if (!src) throw new Error(`unknown source ${input.sourceId}`);
 

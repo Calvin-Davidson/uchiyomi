@@ -33,6 +33,7 @@ import { q, one } from '../lib/db';
 import { pageFileVersion, pageFileVersionOf } from '../lib/pageCleanupFiles';
 import { viewCtxFor, visibleBookFile, seriesVisible, sourceAllowedFor, SYSTEM_CTX, type ViewCtx } from '../lib/visibility';
 import { ART_DIR, artFile, firstPageBookOf, FIRST_PAGE } from '../lib/seriesArt';
+import { encryptedBookId, encryptedSeriesId, ENCRYPTED_MEDIA_TYPE, isEncryptedPage } from '../lib/encryptedMedia';
 import { readTitleLogo } from '../lib/titleArt';
 import { namesOf } from '../lib/altTitles';
 import { HERO_FRAMES, backdropLook, heroFit, type HeroAr } from '../lib/heroFrame';
@@ -685,11 +686,18 @@ const thumbWidth = (req: FastifyRequest): number => {
 // Series cover: an admin's (an upload, a link, or the first page by choice), else the real cover art (the source's, or
 // AniList's when its entry is named as the series is, cached in series_art.cover); fall back to the first page of
 // chapter 1. Distinct cache variants so it upgrades to the real cover once one is known.
+function sendEncryptedPage(reply: FastifyReply, bytes: Buffer | undefined) {
+  if (!bytes || !isEncryptedPage(bytes)) return reply.code(404).send({ error: 'no_page' });
+  return reply.type(ENCRYPTED_MEDIA_TYPE).header('cache-control', 'private, no-store')
+    .header('x-content-type-options', 'nosniff').send(bytes);
+}
+
 export const serveLibSeriesThumb = async (req: FastifyRequest, reply: FastifyReply, id: string) => {
   // The series-level art routes read lib_series and series_art by id, so they need the check that
   // bookFileAbs now carries for chapters. Without it a hidden series' cover still renders, which is
   // how a deleted series has always kept its thumbnail.
   if (!(await seriesVisible(id, vc(req)))) return reply.code(404).send({ error: 'not_found' });
+  if (encryptedSeriesId(id)) return sendEncryptedPage(reply, await firstPageInput(id, vc(req)));
   const w = thumbWidth(req);
   const wk = w === 400 ? '' : `:w${w}`; // 400 keeps the legacy cache key so existing entries stay warm
   // admin override wins (uploaded file or pasted URL); variant carries updated_at so edits bust the cache
@@ -838,6 +846,7 @@ export const serveLibBookThumb = async (req: FastifyRequest, reply: FastifyReply
   // warmed book thumbnail" in komgaCompat.int.test.ts sees 200.
   const abs = await bookFileAbs(id, vc(req));
   if (!abs) return reply.code(404).send({ error: 'not_found' });
+  if (encryptedBookId(id)) return sendEncryptedPage(reply, (await pageOrGone(abs, 0))?.bytes);
   return serveImage(req, reply, `lib-bthumb:${id}`, async () => {
     const first = await pageOrGone(abs, 0);
     if (!first) throw Object.assign(new Error('empty'), { statusCode: 404 });
@@ -872,6 +881,7 @@ export const serveLibBookPage = async (req: FastifyRequest, reply: FastifyReply,
       throw Object.assign(new Error('The chapter changed while reading this page. Restart its download.'), { statusCode: 409 });
     return page;
   };
+  if (encryptedBookId(id)) return sendEncryptedPage(reply, (await currentPage())?.bytes);
   if (tl && !w) {
     const engine = (await translateOn()) ? await engineKey() : null;
     const done = engine ? await doneTranslation(id, pageNo, tl, engine) : null;
@@ -1048,6 +1058,7 @@ export default async function imageRoutes(app: FastifyInstance) {
   // ?style=hero → the REAL art sharp, frame-aware (?ar=wide|tall). Recipe + warmer live at module level.
   app.get('/img/series/:id/backdrop', async (req, reply) => {
     const { id } = req.params as { id: string };
+    if (encryptedSeriesId(id)) return reply.code(404).send({ error: 'not_found' });
     // The same check every sibling image route opens with, and the only one this family was missing. The ctx
     // passed to backdropRecipe below reaches only its FALLBACK path, so whenever series_art holds a banner --
     // the normal state, since AniList art is fetched lazily for everything -- the image was produced from that
@@ -1080,6 +1091,7 @@ export default async function imageRoutes(app: FastifyInstance) {
   // stored one, so an old URL still gets the current banner.
   app.get('/img/series/:id/hero', async (req, reply) => {
     const { id } = req.params as { id: string };
+    if (encryptedSeriesId(id)) return reply.code(404).send({ error: 'not_found' });
     if (!(await seriesVisible(id, vc(req)))) return reply.code(404).send({ error: 'not_found' });
     const hero = (await heroServable([id])).get(id);
     if (!hero) return reply.code(404).send({ error: 'not_found' });
