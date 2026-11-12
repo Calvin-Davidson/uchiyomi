@@ -18,6 +18,15 @@ export interface TranslateStatus {
   pending: number;
 }
 
+/** Translation totals for the visible chapters in a series. */
+export interface SeriesTranslateStatus {
+  available: boolean;
+  total: number;
+  done: number;
+  pending: number;
+  failed: number;
+}
+
 /** The page's address with its translation, when the server has one; the address as it was otherwise. */
 export function translatedSrc(src: string, lang: string, stamp: string | undefined): string {
   if (!stamp) return src;

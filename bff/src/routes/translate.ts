@@ -57,6 +57,38 @@ export default async function translateRoutes(app: FastifyInstance) {
     return bookStatus(id, lang);
   });
 
+  /** Translation progress for every visible chapter in a series, in one request. */
+  app.get('/api/series/:id/translations', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const lang = readerLang((req.query as Record<string, string>).lang);
+    if (!lang) return reply.code(400).send({ error: 'bad_lang' });
+    const books = await q<{ id: string; pages: number }>(
+      'SELECT id, pages FROM lib_books WHERE series_id = $1 ORDER BY id', [id]);
+    if (!books.length) return reply.code(404).send({ error: 'no_series' });
+    const visible: typeof books = [];
+    for (let i = 0; i < books.length; i += 16) {
+      const batch = books.slice(i, i + 16);
+      const results = await Promise.all(batch.map(async (book) =>
+        await visibleBookFile(book.id, vc(req)) ? book : null));
+      visible.push(...results.filter((book): book is typeof books[number] => book !== null));
+    }
+    const key = await available();
+    const total = visible.reduce((sum, book) => sum + Number(book.pages || 0), 0);
+    if (!key) return { available: false, total, done: 0, pending: 0, failed: 0 };
+    const ids = visible.map((book) => book.id);
+    const counts = ids.length ? await q<{ status: string; count: number }>(
+      `SELECT status, count(*)::int AS count FROM page_translations
+        WHERE book_id = ANY($1::text[]) AND lang = $2 AND engine = $3 GROUP BY status`, [ids, lang, key]) : [];
+    const pending = visible.reduce((sum, book) => sum + pagesWanted(book.id, lang), 0);
+    return {
+      available: true,
+      total,
+      done: counts.find((row) => row.status === 'done')?.count ?? 0,
+      pending,
+      failed: counts.find((row) => row.status === 'failed')?.count ?? 0,
+    };
+  });
+
   /** Translate this chapter into `lang` from page `from` on, ahead of anything asked before. */
   app.post('/api/books/:id/translations', async (req, reply) => {
     const { id } = req.params as { id: string };

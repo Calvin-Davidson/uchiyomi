@@ -7351,6 +7351,50 @@ paths:
           description: Not found, or not visible to this account
         "409":
           description: Translated pages are off (translate_off)
+  /api/series/{id}/translations:
+    get:
+      tags:
+        - library
+      summary: Translation progress across a series' visible chapters.
+      operationId: getApiSeriesIdTranslations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: lang
+          in: query
+          required: true
+          description: The reader's language, e.g. `en` or `pt-BR`.
+          schema:
+            type: string
+      security:
+        - bearer: []
+      responses:
+        "200":
+          description: Translation totals for chapters visible to this account.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                  total:
+                    type: integer
+                  done:
+                    type: integer
+                  pending:
+                    type: integer
+                  failed:
+                    type: integer
+        "400":
+          description: lang is not a language code
+        "401":
+          description: Not authenticated
+        "404":
+          description: No visible chapters in the series
   /api/books/{id}/download-manifest:
     get:
       tags:

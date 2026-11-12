@@ -19,12 +19,14 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError, img } from '@/lib/api';
 import type { Series } from '@/lib/types';
-import { languageName } from '@/lib/format';
+import { activeLocale, languageName } from '@/lib/format';
 import { languageChoices } from '@/lib/editions';
+import { keys, LOCALES, t as tr } from '@/lib/i18n';
+import { loadSeriesPrefs, saveSeriesPrefs } from '@/lib/readerPrefs';
+import type { SeriesTranslateStatus } from '@/lib/readerTranslate';
 import { numLabel } from '@/lib/numbering';
 import { useLayer } from '@/lib/layers';
 import { useReduceEffects } from '@/lib/effects';
-import { keys, t as tr } from '@/lib/i18n';
 import { bustCover } from '@/lib/coverBust';
 import { ART_MAX_BYTES, ART_MAX_MB, dataUrlOf } from '@/lib/artUpload';
 import { metaSaver, seedMeta, type SeriesMeta } from '@/lib/seriesMeta';
@@ -435,6 +437,12 @@ function GenresRow({ genres, onSave }: { genres: string[]; onSave: (g: string[])
 function ReadingPane({ id, series, meta, save, onSaved }: {
   id: string; series: Series; meta: SeriesMeta; save: (p: Partial<SeriesMeta>) => Promise<void>; onSaved: () => void;
 }) {
+  const [translateLang, setTranslateLang] = useState(() => loadSeriesPrefs(id).translateLang || activeLocale());
+  const { data: translationProgress } = useQuery({
+    queryKey: ['series-translation-progress', id, translateLang],
+    queryFn: () => api<SeriesTranslateStatus>(`/api/series/${encodeURIComponent(id)}/translations?lang=${encodeURIComponent(translateLang)}`),
+    refetchInterval: (query) => query.state.data?.available && query.state.data.total > 0 ? 5000 : false,
+  });
   return (
     <>
       <ChoiceRow narrow label={tr('Reading direction')} value={meta.readingDirection}
@@ -453,6 +461,23 @@ function ReadingPane({ id, series, meta, save, onSaved }: {
         options={[{ value: '', label: tr('Automatic') }, ...SERIES_TYPES.filter((v) => v !== 'unknown').map((v) => ({ value: v as string, label: tr(seriesTypeKey(v)) }))]}
         onPick={(seriesType) => save({ seriesType })} />
       <LanguageRow id={id} series={series} onSaved={onSaved} />
+      <ChoiceRow narrow label={tr('Translate into')} value={translateLang}
+        options={LOCALES.map((locale) => ({ value: locale.code, label: locale.name }))}
+        onPick={async (lang) => {
+          setTranslateLang(lang);
+          saveSeriesPrefs(id, { translateLang: lang });
+        }} />
+      {translationProgress?.available && translationProgress.total > 0 && (
+        <div className="py-2" data-series-translation-progress role="status" aria-live="polite">
+          <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-fog-500">
+            <span>{tr('Translation progress')}</span>
+            <span>{tr('{done}/{total} pages translated · {pending} waiting · {failed} failed', translationProgress)}</span>
+          </div>
+          <progress aria-label={tr('Translation progress')} max={translationProgress.total}
+            value={Math.min(translationProgress.total, translationProgress.done + translationProgress.failed)}
+            className="h-1.5 w-full overflow-hidden rounded-full accent-[rgb(var(--accent))]" />
+        </div>
+      )}
       <ChoiceRow narrow label={tr('Age rating')} value={meta.ageRating}
         help={tr('Members with an age limit below this will not see the series anywhere: not in the library, search, the reader, or an external OPDS app.')}
         options={[{ value: '', label: tr('Not rated') }, ...ages(meta.ageRating).map((a) => ({ value: String(a), label: `${a}+` }))]}
