@@ -2086,6 +2086,12 @@ function ReaderInner() {
     return () => clearInterval(t);
   }, [trPendingIds, trLang]);
   const trLine = trOn && activeChapter ? translating(trHere, activeChapter.pages.length) : null;
+  const trProgress = trOn && activeChapter && trHere ? {
+    done: Object.keys(trHere.pages).length,
+    total: activeChapter.pages.length,
+    pending: trHere.pending,
+    failed: trHere.failed.length,
+  } : undefined;
 
   // ---- bookmarks ----
   // A bookmark is a note about a page, not a pointer to bytes, so it is keyed on (book, page) and survives
@@ -2623,6 +2629,7 @@ function ReaderInner() {
             onTranslate={trOffer?.available ? applyTranslate : undefined}
             translateLang={trLang}
             onTranslateLang={trOffer?.available ? applyTranslateLang : undefined}
+            translationProgress={trProgress}
             device={device}
             setDevice={setDevice}
             autoApplied={autoApplied}

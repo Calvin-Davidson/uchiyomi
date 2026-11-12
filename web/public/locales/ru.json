@@ -4067,6 +4067,8 @@
   "about {n} min left": "осталось около {n} мин",
   "Translate pages": "Переводить страницы",
   "Translate into": "Перевести на",
+  "Translation progress": "Ход перевода",
+  "{done}/{total} pages translated · {pending} waiting · {failed} failed": "Переведено страниц: {done}/{total} · в очереди: {pending} · ошибок: {failed}",
   "The server reads the speech bubbles and writes them in {language}, a page every few seconds from the one you are on. Remembered for this title.": "Сервер читает текст в облачках и переписывает его на язык «{language}» — по странице каждые несколько секунд, начиная с той, где вы сейчас. Запоминается для этого тайтла.",
   "Translating… {done}/{total}": "Перевод… {done}/{total}",
   "Runs on this server: pages never leave it.": "Работает на этом сервере: страницы никуда с него не уходят.",

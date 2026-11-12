@@ -4067,6 +4067,8 @@
   "about {n} min left": "يتبقى نحو {n} د",
   "Translate pages": "ترجمة الصفحات",
   "Translate into": "الترجمة إلى",
+  "Translation progress": "تقدّم الترجمة",
+  "{done}/{total} pages translated · {pending} waiting · {failed} failed": "تُرجمت {done}/{total} صفحة · {pending} قيد الانتظار · {failed} فشلت",
   "The server reads the speech bubbles and writes them in {language}, a page every few seconds from the one you are on. Remembered for this title.": "يقرأ الخادم فقاعات الكلام ويكتبها بلغتك ({language})، صفحةً كل بضع ثوانٍ بدءًا من الصفحة التي أنت عليها. يُحفظ لهذا العنوان.",
   "Translating… {done}/{total}": "جارٍ الترجمة… {done}/{total}",
   "Runs on this server: pages never leave it.": "يعمل على هذا الخادم: لا تغادره الصفحات أبدًا.",

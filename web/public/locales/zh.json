@@ -4067,6 +4067,8 @@
   "about {n} min left": "约剩 {n} 分钟",
   "Translate pages": "翻译页面",
   "Translate into": "翻译成",
+  "Translation progress": "翻译进度",
+  "{done}/{total} pages translated · {pending} waiting · {failed} failed": "已翻译 {done}/{total} 页 · 等待中 {pending} 页 · 失败 {failed} 页",
   "The server reads the speech bubbles and writes them in {language}, a page every few seconds from the one you are on. Remembered for this title.": "服务器会读取对话气泡并用{language}重写，从你当前所在的页面开始，每隔几秒一页。会为此作品记住。",
   "Translating… {done}/{total}": "正在翻译… {done}/{total}",
   "Runs on this server: pages never leave it.": "在本服务器上运行：页面绝不会离开它。",

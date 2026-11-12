@@ -57,6 +57,7 @@ export function ReaderSettings({
   onTranslate,
   translateLang,
   onTranslateLang,
+  translationProgress,
   device,
   setDevice,
   autoApplied,
@@ -84,6 +85,8 @@ export function ReaderSettings({
   /** Translation target for this title. Unset follows the app language. */
   translateLang?: string;
   onTranslateLang?: (lang: string) => void;
+  /** Current chapter's translation state, including pages that failed or are still queued. */
+  translationProgress?: { done: number; total: number; pending: number; failed: number };
   /** This device's own settings (v0.61.0, lib/readerDevice.ts): kept in this browser, never synced. */
   device: DevicePrefs;
   setDevice: (p: Partial<DevicePrefs>) => void;
@@ -191,6 +194,17 @@ export function ReaderSettings({
                 {LOCALES.map((locale) => <option key={locale.code} value={locale.code}>{locale.name}</option>)}
               </select>
             </label>
+            {translationProgress && (
+              <div className="mt-3" data-translation-progress role="status" aria-live="polite">
+                <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-fog-400">
+                  <span>{tr('Translation progress')}</span>
+                  <span>{tr('{done}/{total} pages translated · {pending} waiting · {failed} failed', translationProgress)}</span>
+                </div>
+                <progress aria-label={tr('Translation progress')} max={Math.max(1, translationProgress.total)}
+                  value={Math.min(translationProgress.total, translationProgress.done + translationProgress.failed)}
+                  className="h-1.5 w-full overflow-hidden rounded-full accent-[rgb(var(--accent))]" />
+              </div>
+            )}
           </div>
         )}
 

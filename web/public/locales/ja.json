@@ -4067,6 +4067,8 @@
   "about {n} min left": "残り約 {n} 分",
   "Translate pages": "ページを翻訳",
   "Translate into": "翻訳先",
+  "Translation progress": "翻訳の進行状況",
+  "{done}/{total} pages translated · {pending} waiting · {failed} failed": "{done}/{total} ページ翻訳済み · {pending} 件待機中 · {failed} 件失敗",
   "The server reads the speech bubbles and writes them in {language}, a page every few seconds from the one you are on. Remembered for this title.": "サーバーが吹き出しを読み取り、{language}で書き直します。今いるページから、数秒ごとに1ページずつ進みます。この作品ごとに記憶されます。",
   "Translating… {done}/{total}": "翻訳中… {done}/{total}",
   "Runs on this server: pages never leave it.": "このサーバー上で動作し、ページが外部に送られることはありません。",

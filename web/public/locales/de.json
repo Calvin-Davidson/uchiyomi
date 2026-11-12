@@ -4067,6 +4067,8 @@
   "about {n} min left": "noch etwa {n} Min.",
   "Translate pages": "Seiten übersetzen",
   "Translate into": "Übersetzen in",
+  "Translation progress": "Übersetzungsfortschritt",
+  "{done}/{total} pages translated · {pending} waiting · {failed} failed": "{done}/{total} Seiten übersetzt · {pending} in Warteschlange · {failed} fehlgeschlagen",
   "The server reads the speech bubbles and writes them in {language}, a page every few seconds from the one you are on. Remembered for this title.": "Der Server liest die Sprechblasen und schreibt sie auf {language}, alle paar Sekunden eine Seite, ab der, auf der du gerade bist. Wird für diesen Titel gemerkt.",
   "Translating… {done}/{total}": "Wird übersetzt… {done}/{total}",
   "Runs on this server: pages never leave it.": "Läuft auf diesem Server: Die Seiten verlassen ihn nie.",
