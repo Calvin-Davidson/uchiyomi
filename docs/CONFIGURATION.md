@@ -734,6 +734,24 @@ stop after 10 minutes without a page.
 | `TRANSLATE_DIR` | `<CONFIG_DIR>/translate` | Where the engine is downloaded to. |
 | `TRANSLATE_THREADS` | half the CPUs | CPU threads the model uses. The OCR uses at most 4. |
 | `TRANSLATE_MODEL` | by memory | `large` or `small`, to pick the model yourself. |
-| `TRANSLATE_ENGINE_URL` | none | Translate with a llama.cpp server you already run (a machine with a graphics card, say) instead of downloading a model. Download then fetches only the engine pack, for the OCR and the fonts. |
+| `TRANSLATE_ENGINE_URL` | none | URL of an existing llama.cpp server. Used when `TRANSLATE_PROVIDER` is unset. |
+
+Set hosted provider options in the server's `.env` (see [the example](../.env.example)). Recreate the Docker container
+after editing the file, for example with `docker compose up -d`. Keep API keys in your private `.env`.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TRANSLATE_PROVIDER` | local | Use `openai-compatible` for Chat Completions or `anthropic` for Messages. |
+| `TRANSLATE_PROVIDER_URL` | OpenAI or Anthropic endpoint | Full request URL, including the path and any required API version. |
+| `TRANSLATE_PROVIDER_MODEL` | none | Model ID or deployment name, required for hosted providers. |
+| `TRANSLATE_PROVIDER_AUTH` | `bearer` or `x-api-key` | Also accepts `api-key` for compatible deployments and `none` for unauthenticated endpoints. |
+| `TRANSLATE_PROVIDER_API_KEY` | none | Credential for authenticated HTTPS endpoints. |
+| `TRANSLATE_PROVIDER_VISION` | false | Set to `true` to allow sending images to a model that accepts them. |
+| `TRANSLATE_PROVIDER_JSON_MODE` | false | Set to `true` for Chat Completions endpoints that support JSON objects without strict JSON Schema. |
+
+For DeepSeek, use `https://api.deepseek.com/chat/completions` with Bearer authentication and JSON mode. For
+HostYourAI, use `https://hostyourai.com/api/v1/chat/completions` with Bearer authentication and the deployed model ID.
+For Azure AI Foundry, use the deployment's full endpoint and required auth header. Select `anthropic` for Foundry
+Claude deployments that use the Messages API.
 
 Not in Uchiyomi Desktop yet: its server runs inside the app, where the engine's processes cannot.

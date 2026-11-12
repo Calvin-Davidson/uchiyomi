@@ -49,8 +49,9 @@ export function TranslateRow() {
   const call = (path: string, method: string, json?: unknown) =>
     run(async () => { qc.setQueryData(KEY, await api<TranslateEngine>(path, { method, json })); });
   const label = tr('Translate pages');
-  const where = tr('Runs on this server: pages never leave it.');
-
+  const where = st.external
+    ? tr('OCR runs on this server. OCR text and, when enabled, page images are sent to the selected provider.')
+    : tr('Runs on this server: pages never leave it.');
   if (st.state === 'ready') {
     return wrap(
       <RowBlock id="translate">
@@ -102,9 +103,12 @@ export function TranslateRow() {
 
   // Missing, or a download that failed: the button, and what it costs before it is pressed.
   const short = st.free > 0 && st.free < st.need;
+  const downloadHelp = st.external
+    ? tr('Needs a one-time download of the OCR support pack ({size}); the translation model runs at your provider.', { size: bytes(st.need) })
+    : tr('Translate the speech bubbles of any chapter into each reader’s language. Needs a one-time download of {size}, and {memory} of memory while it translates.', { size: bytes(st.need), memory: bytes(st.ram) });
   return wrap(
     <Row id="translate" label={label} status={status} stacked
-      help={`${tr('Translate the speech bubbles of any chapter into each reader’s language. Needs a one-time download of {size}, and {memory} of memory while it translates.', { size: bytes(st.need), memory: bytes(st.ram) })} ${where}`}>
+      help={`${downloadHelp} ${where}`}>
       <div data-translate-engine={st.state}>
         {st.state === 'failed' && (
           <p role="alert" className="mb-2 max-w-prose text-[11px] leading-relaxed text-red-300">
@@ -119,7 +123,9 @@ export function TranslateRow() {
         )}
         <button type="button" disabled={short} onClick={() => void call('/api/admin/translate/download', 'POST', {})}
           className="btn-accent px-4 py-2 text-sm disabled:opacity-50">
-          {st.state === 'failed' ? tr('Try again') : tr('Download ({size})', { size: bytes(st.need) })}
+          {st.state === 'failed' ? tr('Try again') : st.external
+            ? tr('Download OCR support pack ({size})', { size: bytes(st.need) })
+            : tr('Download ({size})', { size: bytes(st.need) })}
         </button>
       </div>
     </Row>,

@@ -1058,7 +1058,8 @@ the next check downloads what it no longer hides.
 ## Translated pages
 
 Since v0.85.0, opt-in. Nothing here runs until an admin downloads the translation engine and turns *Translate pages*
-on (Admin → Settings). The engine runs on the server itself, and pages never leave it.
+on (Admin → Settings). Local mode keeps pages on the server; a hosted provider receives OCR text and names, and may
+receive page images for uncertain OCR.
 
 - **Admin.** `GET /api/admin/translate` is the engine and the switch: `enabled`, `state` (`unsupported`, `missing`,
   `downloading` with `done` of `total` bytes, `ready`, `failed` with `error`), `pick` (the model size Download would

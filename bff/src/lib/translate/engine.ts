@@ -8,12 +8,13 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { OcrWorker } from './ocr';
 import { TranslationModel } from './llm';
+import { providerConfig } from './provider';
 import { MODELS, PACK_TAG, PACKS, platformKey, type EngineSize, type PinnedFile } from './pin';
 import { isDesktop } from '../desktop';
 
 /**
- * The translation engine: an optional download (Admin -> Settings -> Translate pages), never part of the image. Until
- * an admin presses Download nothing here runs, nothing is fetched and no file is written.
+ * The translation engine: an optional download (Admin -> Settings -> Translate pages), never part of the image. Hosted
+ * providers download only OCR and font assets; local mode also downloads the model.
  *
  * On disk, in TRANSLATE_DIR (default <CONFIG_DIR>/translate):
  *   pack/            llama-server, onnxruntime-web, the OCR models, the fonts (the platform's pack, unpacked)
@@ -26,9 +27,6 @@ const GiB = 1024 ** 3;
 const IDLE_MS = 10 * 60_000;
 
 export const translateDir = () => process.env.TRANSLATE_DIR || path.join(process.env.CONFIG_DIR || '/config', 'translate');
-/** An existing llama.cpp-compatible server to translate with (a machine with a GPU, say): no model is downloaded then. */
-const externalUrl = () => process.env.TRANSLATE_ENGINE_URL?.trim() || '';
-
 interface Installed { tag: string; platform: string; size: EngineSize | null; at: string }
 
 export interface EngineStatus {
@@ -86,22 +84,26 @@ const supported = () => !isDesktop() && !!PACKS[platformKey()];
 
 export async function engineStatus(): Promise<EngineStatus> {
   const pick = pickSize();
-  const ram = externalUrl() ? 0 : MODELS[pick].files.reduce((s, f) => s + f.bytes, 0) + GiB;
-  const base = { pick, memGiB: Math.round(memGiB()), ram, external: !!externalUrl(), running: !!procs && (procs.model.running || procs.ocr.running) };
+  const config = providerConfig();
+  const external = config.provider !== 'local';
+  const ram = external ? 0 : MODELS[pick].files.reduce((s, f) => s + f.bytes, 0) + GiB;
+  const base = { pick, memGiB: Math.round(memGiB()), ram, external, running: !!procs && (procs.model.running || procs.ocr.running) };
   if (!supported()) return { ...base, state: 'unsupported', size: null, done: 0, total: 0, need: 0, free: 0 };
   const free = await freeBytes(translateDir());
-  const need = filesFor(externalUrl() ? null : pick).reduce((s, f) => s + f.bytes, 0);
+  const need = filesFor(external ? null : pick).reduce((s, f) => s + f.bytes, 0);
   if (job) return { ...base, state: 'downloading', size: job.size, done: job.done, total: job.total, need, free };
   const inst = await readInstalled();
-  if (inst) return { ...base, state: 'ready', size: inst.size, done: 0, total: 0, need, free };
+  if (inst && (external || inst.size !== null)) return { ...base, state: 'ready', size: inst.size, done: 0, total: 0, need, free };
   return { ...base, state: lastError ? 'failed' : 'missing', size: null, done: 0, total: 0, need, free, error: lastError };
 }
 
 export const engineInstalled = async () => !!(await readInstalled());
-/** The installed model size (null: translating through TRANSLATE_ENGINE_URL), or undefined when nothing is installed. */
+/** The installed model size (null: using a hosted model), or undefined when the required engine files are missing. */
 export async function installedSize(): Promise<EngineSize | null | undefined> {
   const i = await readInstalled();
-  return i ? (externalUrl() ? null : i.size) : undefined;
+  if (!i) return undefined;
+  const config = providerConfig();
+  return config.provider !== 'local' ? null : i.size ?? undefined;
 }
 
 /** One pinned file into `dest`, resuming a partial download, its SHA-256 checked before it is kept. */
@@ -142,8 +144,10 @@ const untar = (file: string, into: string) => new Promise<void>((resolve, reject
 /** Starts the download in the background (one at a time). Size: the one this machine picks, unless forced. */
 export function startDownload(size: EngineSize = pickSize()): void {
   if (job || !supported()) return;
+  const config = providerConfig();
+  const external = config.provider !== 'local';
   const dir = translateDir();
-  const want = externalUrl() ? null : size;
+  const want = external ? null : size;
   const files = filesFor(want);
   const abort = new AbortController();
   lastError = undefined;
@@ -210,18 +214,19 @@ export async function acquireEngine(): Promise<Engine> {
   if (!inst) throw new Error('the translation engine is not installed');
   const dir = translateDir();
   const pack = path.join(dir, 'pack');
+  const config = providerConfig();
+  const external = config.provider !== 'local';
   const threads = Math.max(2, Number(process.env.TRANSLATE_THREADS) || Math.floor((os.availableParallelism?.() ?? os.cpus().length) / 2));
-  const url = externalUrl();
-  if (!url && inst.size) {
+  if (!external && inst.size) {
     const model = MODELS[inst.size];
     const size = model.files.reduce((s, f) => s + f.bytes, 0);
     if (memAvailable() < size + GiB) throw new Error(`not enough free memory for the translation model (it needs about ${Math.ceil(size / GiB) + 1} GB)`);
   }
-  const model = inst.size && !url ? MODELS[inst.size] : null;
+  const model = inst.size && !external ? MODELS[inst.size] : null;
   procs = {
     ocr: new OcrWorker(pack, Math.min(4, threads)),
-    model: new TranslationModel(url
-      ? { url, threads }
+    model: new TranslationModel(external
+      ? config.legacyLlama ? { url: config.endpoint, threads } : { provider: config, threads }
       : {
         bin: path.join(pack, 'bin', 'llama-server'),
         model: path.join(dir, 'models', inst.size!, 'model.gguf'),

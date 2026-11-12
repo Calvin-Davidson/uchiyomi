@@ -1,6 +1,7 @@
 import { one } from '../db';
 import { installedSize, stopEngine } from './engine';
 import { PIPELINE_VERSION, recordFailure, translatePage } from './pages';
+import { providerFingerprint } from './provider';
 
 /**
  * The pages waiting to be translated, one at a time: a page is a CPU's worth of work for several seconds, and two at
@@ -28,7 +29,7 @@ export async function translateOn(): Promise<boolean> {
 export async function engineKey(): Promise<string | null> {
   const size = await installedSize();
   if (size === undefined) return null;
-  return `${size ?? 'ext'}-v${PIPELINE_VERSION}`;
+  return `${size ?? `ext-${providerFingerprint()}`}-v${PIPELINE_VERSION}`;
 }
 
 export const queueProblem = () => problem;

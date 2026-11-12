@@ -82,6 +82,7 @@ import { privateAdminContentGuard, privateAdminResponse } from './lib/privateAdm
 import notifyRoutes from './routes/notify';
 import translateRoutes from './routes/translate';
 import { stopEngine } from './lib/translate/engine';
+import { providerConfig } from './lib/translate/provider';
 import commentRoutes from './routes/comments';
 import { isDesktop } from './lib/desktop';
 import { installDesktopGuards } from './lib/desktopGuard';
@@ -90,6 +91,7 @@ import { initialiseBulkChapterDeleteRuns } from './lib/bulkChapterDelete';
 import { authFacts, authModeProblems, authModeWarnings } from './lib/authMode';
 
 async function main() {
+  providerConfig();
   // A TRUST_PROXY entry Fastify cannot read stops the server here, naming the entry, before the migrations run; one that
   // works but not as its author likely thinks is said at every start (lib/auth.ts trustProxyProblems, trustProxyWarnings).
   // Not on desktop, which trusts no proxy whatever is set (`trustProxy` below).

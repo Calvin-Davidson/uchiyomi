@@ -1987,12 +1987,16 @@ download it again afterward to keep the updated version. Other devices' complete
 Since v0.85.0. For a chapter in a language you don't read: a raw chapter the day it comes out, or an English chapter in
 your own language. It is optional, and nothing changes until an admin turns it on.
 
-**Turning it on (admin).** **Admin → Settings → Server → Translate pages → Download**. The download is the translation
-engine: a reader for the text in the pages, a translation model and the fonts it writes with. It is about 18 GB on a
-server with 28 GB of memory or more (the large model, which can also look at the page when its text is hard to read),
-and about 2.4 GB elsewhere. The row says what it will take, in disk and in memory, before you press it. It goes in
-`TRANSLATE_DIR` (see [CONFIGURATION](CONFIGURATION.md#translated-pages): on a small system disk, point it at a big one).
-Then turn **Translate pages** on. **Remove the translation engine** deletes it again.
+**Turning it on (admin).** Configure hosted providers in the server’s `.env` using the
+[translation settings](CONFIGURATION.md#translated-pages). Then use **Admin → Settings → Server → Translate pages → Download** and turn on **Translate pages**. A local model downloads the OCR reader, translation model and fonts (about
+18 GB on a server with 28 GB of memory or more, or about 2.4 GB elsewhere). A hosted model downloads the smaller OCR
+support pack; it does not download model weights. The row shows disk and memory needs before you press it. Files go in
+`TRANSLATE_DIR` (see
+[CONFIGURATION](CONFIGURATION.md#translated-pages)). **Remove the translation engine** deletes those files.
+
+Hosted providers may charge for each translated page. OCR runs on your server; OCR text and names are sent to the
+provider. If `TRANSLATE_PROVIDER_VISION=true` is set, pages with uncertain OCR also send a page image.
+Disable that option for text-only deployments. Check your provider's data handling and billing terms before enabling it.
 
 **Reading.** In the reader's settings, turn on **Translate pages** for the series you are reading; it is remembered for
 that series. Choose **Translate into** there to use a language other than Uchiyomi's detected language. Translation
@@ -2015,8 +2019,8 @@ translated once per language and kept, so reading it again costs nothing.
   priority, so reading and downloads stay quick. It stops after 10 minutes without a page.
 - **Quality.** It is a machine translation of machine-read text: names, jokes and stylised lettering sometimes come out
   wrong.
-- **Privacy.** Pages, text and names never leave your server. Only the download comes from the internet (GitHub and
-  Hugging Face).
+- **Privacy.** With a local model, pages, text and names stay on your server. With a hosted provider, OCR text and names
+  go to that provider, and some pages may also be sent as images. The selected engine downloads come from the internet.
 - Not in Uchiyomi Desktop yet. Chapters downloaded for offline reading show the original pages.
 
 ---
