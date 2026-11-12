@@ -105,7 +105,7 @@ export interface UploadRun { done: number; failed: string[]; failedFiles: string
  * keep the supplied order and stored names so the scanner reads the assigned chapter numbers. A refusal is kept
  * and the run goes on, so one bad file does not cost the rest.
  */
-export async function uploadAll(to: UploadTarget, files: File[], onFile?: (i: number, f: File) => void, expectedOwnerId = getCurrentUser(), numberByOrder = false, storedNames?: string[]): Promise<UploadRun> {
+export async function uploadAll(to: UploadTarget, files: File[], onFile?: (i: number, f: File) => void, expectedOwnerId = getCurrentUser(), numberByOrder = false, storedNames?: ReadonlyMap<File, string>): Promise<UploadRun> {
   const ordered = numberByOrder ? files : [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const run: UploadRun = { done: 0, failed: [], failedFiles: [], seriesId: null };
   for (const [i, f] of ordered.entries()) {
@@ -117,7 +117,7 @@ export async function uploadAll(to: UploadTarget, files: File[], onFile?: (i: nu
     try {
       // When the person chose list order for a new series, give the stored files explicit chapter numbers.
       // The archive bytes remain untouched; only the filename used by the library scanner changes.
-      const storedName = numberByOrder ? (storedNames?.[i] ?? `Chapter ${i + 1}${f.name.match(/\.[^.]+$/)?.[0] ?? ''}`) : f.name;
+      const storedName = storedNames?.get(f) ?? (numberByOrder ? `Chapter ${i + 1}${f.name.match(/\.[^.]+$/)?.[0] ?? ''}` : f.name);
       const r = await uploadChapter(here, f, expectedOwnerId, storedName);
       run.done++;
       if (r.seriesId) run.seriesId = r.seriesId;

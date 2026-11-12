@@ -20,7 +20,7 @@ function useUpload(onDone: (run: UploadRun) => void) {
   const toast = useToast();
   const qc = useQueryClient();
   const [at, setAt] = useState<{ i: number; n: number } | null>(null);
-  const start = async (to: UploadTarget, files: File[], imageChapter?: string, numberByOrder = false, storedNames?: string[]) => {
+  const start = async (to: UploadTarget, files: File[], imageChapter?: string, numberByOrder = false, storedNames?: ReadonlyMap<File, string>) => {
     if (!files.length || !mounted.current || !ownerId || getCurrentUser() !== ownerId) return;
     setAt({ i: 0, n: imageChapter ? 1 : files.length });
     let run: UploadRun;
@@ -85,6 +85,7 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
   const [files, setFiles] = useState<File[]>([]);
   const [numberByOrder, setNumberByOrder] = useState(false);
   const orderedNames = useRef(new Map<File, string>());
+  const chapterNames = useRef(new WeakMap<File, string>());
   const [made, setMade] = useState<{ id: string; title: string } | null>(null);
   const [takenTitle, setTakenTitle] = useState<string | null>(null);
   const { at, start } = useUpload((run) => {
@@ -113,16 +114,23 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
   const chapterFileNames = () => {
     const used = new Set([...orderedNames.current.values()].map(name => Number(/^Chapter (\d+)/.exec(name)?.[1])).filter(Number.isFinite));
     let next = 1;
-    return files.map(file => {
-      let name = orderedNames.current.get(file);
-      if (!name) {
+    const storedNames = new Map<File, string>();
+    for (const file of files) {
+      const extension = file.name.match(/\.[^.]+$/)?.[0] ?? '';
+      let name = numberByOrder ? orderedNames.current.get(file) : undefined;
+      if (numberByOrder && !name) {
         while (used.has(next)) next++;
-        name = `Chapter ${next}${file.name.match(/\.[^.]+$/)?.[0] ?? ''}`;
+        name = `Chapter ${next}${extension}`;
         orderedNames.current.set(file, name);
         used.add(next++);
       }
-      return name;
-    });
+      const custom = chapterNames.current.get(file)?.trim();
+      if (custom) {
+        name = extension && custom.toLowerCase().endsWith(extension.toLowerCase()) ? custom : custom + extension;
+      }
+      if (name) storedNames.set(file, name);
+    }
+    return storedNames;
   };
   const addImages = (more: File[]) => {
     const picked = orderedImagePages(more);
@@ -187,12 +195,12 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
       </div>
       {!seriesId && files.length > 0 && <label className="mt-3 flex max-w-prose items-start gap-2 text-xs leading-relaxed text-fog-400">
         <input type="checkbox" checked={numberByOrder} onChange={e => setNumberByOrder(e.target.checked)} disabled={!!at} className="mt-0.5 accent-accent" />
-        <span>{tr('Use this order for chapter numbers. Files will be named Chapter 1, Chapter 2, and so on; move them below to set the order.')}</span>
+        <span>{tr('Use this order to assign Chapter 1, Chapter 2, and so on as the default chapter names.')}</span>
       </label>}
       {files.length > 0 && (
         <ul className="mt-3 divide-y divide-ink-700 rounded-xl border border-ink-700" data-upload-files>
           {files.map((f, i) => (
-            <li key={f.name} className="flex items-center gap-2 px-3 py-2 text-sm">
+            <li key={f.name} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
               <span className="w-6 shrink-0 text-fog-500">{numberByOrder ? orderedNames.current.get(f)?.match(/^Chapter (\d+)/)?.[1] ?? i + 1 : i + 1}</span>
               <span className="min-w-0 flex-1 truncate text-fog-200" dir="auto">{f.name}</span>
               {!at && (
@@ -205,13 +213,19 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
                   className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-fog-500 hover:text-fog-100"><IcX width={14} height={14} /></button>
                 </>
               )}
+              <label className="w-full pl-8 text-xs text-fog-400">
+                {tr('Chapter name')}
+                <input defaultValue={chapterNames.current.get(f)} onChange={e => chapterNames.current.set(f, e.target.value)}
+                  placeholder={numberByOrder ? (orderedNames.current.get(f) ?? `Chapter ${i + 1}`).replace(/\.[^.]+$/, '') : f.name.replace(/\.[^.]+$/, '')}
+                  disabled={!!at} maxLength={240} dir="auto" className="field mt-1 w-full" />
+              </label>
             </li>
           ))}
         </ul>
       )}
       </>}
 
-      <button type="button" onClick={() => void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility }, mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined, numberByOrder && !seriesId, numberByOrder && !seriesId ? chapterFileNames() : undefined)} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
+      <button type="button" onClick={() => void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility }, mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined, numberByOrder, mode === 'archives' ? chapterFileNames() : undefined)} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
         {at && <ProgressRing progress="spin" size={14} />}
         {at ? progressText(at) : tr('Upload')}
       </button>

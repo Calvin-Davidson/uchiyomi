@@ -31,9 +31,12 @@ test('a run names the files that failed, and the next file of a new series joins
     return new Response(JSON.stringify({ file: 'x', seriesId: 's_new', bookId: 'b', number: 1, indexed: true }), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
   try {
-    const files = ['Chapter 1.cbz', 'Chapter 2.cbz', 'Chapter 3.cbz'].map((n) => new File([new Uint8Array([1])], n));
-    const run = await uploadAll({ title: 'New One', fresh: true }, files);
-    assert.deepEqual([run.done, run.failedFiles, run.seriesId], [2, ['Chapter 2.cbz'], 's_new']);
+    const files = ['Chapter 3.cbz', 'Chapter 1.cbz', 'Incorrect name.cbz'].map((n) => new File([new Uint8Array([1])], n));
+    const storedNames = new Map([[files[2], 'Chapter 2.cbz']]);
+    const run = await uploadAll({ title: 'New One', fresh: true }, files, undefined, undefined, false, storedNames);
+    assert.deepEqual([run.done, run.failedFiles, run.seriesId], [2, ['Incorrect name.cbz'], 's_new']);
+    assert.deepEqual(asked.map(url => new URL(url, 'http://localhost').searchParams.get('name')),
+      ['Chapter 1.cbz', 'Chapter 3.cbz', 'Chapter 2.cbz']);
     assert.match(asked[0], /title=New%20One&fresh=1/, 'the first file makes the series');
     assert.match(asked[1], /seriesId=s_new/, 'the next ones join it');
   } finally { globalThis.fetch = orig; }
