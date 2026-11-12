@@ -55,6 +55,8 @@ export function ReaderSettings({
   onSpreadShift,
   translate = false,
   onTranslate,
+  translateLang,
+  onTranslateLang,
   device,
   setDevice,
   autoApplied,
@@ -79,6 +81,9 @@ export function ReaderSettings({
    */
   translate?: boolean;
   onTranslate?: (v: boolean) => void;
+  /** Translation target for this title. Unset follows the app language. */
+  translateLang?: string;
+  onTranslateLang?: (lang: string) => void;
   /** This device's own settings (v0.61.0, lib/readerDevice.ts): kept in this browser, never synced. */
   device: DevicePrefs;
   setDevice: (p: Partial<DevicePrefs>) => void;
@@ -176,8 +181,16 @@ export function ReaderSettings({
             </div>
             <p className="mt-1 text-[11px] leading-snug text-fog-500">
               {tr('The server reads the speech bubbles and writes them in {language}, a page every few seconds from the one you are on. Remembered for this title.',
-                { language: LOCALES.find((l) => l.code === activeLocale())?.name ?? 'English' })}
+                { language: LOCALES.find((l) => l.code === (translateLang ?? activeLocale()))?.name ?? 'English' })}
             </p>
+            <label className="mt-3 flex items-center justify-between gap-3 text-sm text-fog-300">
+              <span>{tr('Translate into')}</span>
+              <select aria-label={tr('Translate into')} value={translateLang ?? activeLocale()}
+                onChange={(e) => onTranslateLang?.(e.target.value)}
+                className="max-w-[60%] rounded-xl border border-ink-700 bg-ink-850 px-3 py-2 text-sm text-fog-100">
+                {LOCALES.map((locale) => <option key={locale.code} value={locale.code}>{locale.name}</option>)}
+              </select>
+            </label>
           </div>
         )}
 

@@ -259,6 +259,8 @@ export interface SeriesPrefs {
   spreadShift?: boolean;
   /** Translated pages (v0.85.0, lib/readerTranslate.ts): this title's pages in the reader's language, remembered per title. */
   translate?: boolean;
+  /** Language translated pages should use for this title; unset follows the app language. */
+  translateLang?: string;
   pagedDirection?: ReaderPrefs['pagedDirection'];
   /**
    * The direction above was CHOSEN for this title in the reader, rather than copied into its memory along

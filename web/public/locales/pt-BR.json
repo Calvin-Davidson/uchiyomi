@@ -4066,6 +4066,7 @@
   "about {n} s left": "faltam cerca de {n} s",
   "about {n} min left": "faltam cerca de {n} min",
   "Translate pages": "Traduzir páginas",
+  "Translate into": "Traduzir para",
   "The server reads the speech bubbles and writes them in {language}, a page every few seconds from the one you are on. Remembered for this title.": "O servidor lê os balões de fala e os escreve em {language}, uma página a cada poucos segundos a partir daquela em que você está. Lembrado para este título.",
   "Translating… {done}/{total}": "Traduzindo… {done}/{total}",
   "Runs on this server: pages never leave it.": "Roda neste servidor: as páginas nunca saem dele.",

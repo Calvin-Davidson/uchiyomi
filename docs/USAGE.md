@@ -1995,8 +1995,9 @@ and about 2.4 GB elsewhere. The row says what it will take, in disk and in memor
 Then turn **Translate pages** on. **Remove the translation engine** deletes it again.
 
 **Reading.** In the reader's settings, turn on **Translate pages** for the series you are reading; it is remembered for
-that series. Pages are translated into your language (the one Uchiyomi is in for you), one at a time, from the page you
-are on. A page shows translated once it is done, and as it was until then, so you can start reading straight away.
+that series. Choose **Translate into** there to use a language other than Uchiyomi's detected language. Translation
+starts at the page you are on and continues through the chapter, one page at a time. A page shows translated once it is
+done, and as it was until then, so you can start reading straight away.
 While it works, the top bar says *Translating… 12/40*. The next chapter follows when this one is done.
 
 **How it works.** The server reads the text of each speech bubble, then translates the page's bubbles together, told the

@@ -238,7 +238,9 @@ function ReaderInner() {
     staleTime: 5 * 60_000,
   });
   const trOn = translate && !!trOffer?.available;
-  const trLang = activeLocale();
+  const [trLang, setTrLang] = useState(activeLocale());
+  const trLangRef = useRef(trLang);
+  useEffect(() => { trLangRef.current = trLang; }, [trLang]);
   const [trStatus, setTrStatus] = useState<Record<string, TranslateStatus>>({});
   /**
    * One page of the pair on screen brought into frame (#232 by a tap, #261 by the `focus` key): the slide then shows that
@@ -382,6 +384,13 @@ function ReaderInner() {
   const applyTranslate = (v: boolean) => {
     setTranslate(v);
     if (seriesId0) saveSeriesPrefs(seriesId0, { translate: v });
+  };
+  const applyTranslateLang = (lang: string) => {
+    trLangRef.current = lang;
+    setTrLang(lang);
+    setTrStatus({});
+    trAsked.current.clear();
+    if (seriesId0) saveSeriesPrefs(seriesId0, { translateLang: lang });
   };
   const applyZoom = (z: number) => {
     const clamped = Math.max(1, Math.min(3, z));
@@ -545,6 +554,7 @@ function ReaderInner() {
       setZoom(memory.zoom && memory.zoom >= 1 ? memory.zoom : 1);
       setSpreadShift(memory.spreadShift === true);
       setTranslate(memory.translate === true);
+      setTrLang(memory.translateLang || activeLocale());
       titleOpen.current = true;
       setReady(true);
     })();
@@ -2048,14 +2058,14 @@ function ReaderInner() {
     if (trAsked.current.has(id)) return;
     trAsked.current.add(id);
     api<TranslateStatus>(`/api/books/${encodeURIComponent(id)}/translations`, { method: 'POST', json: { lang: trLang, from } })
-      .then((st) => setTrStatus((cur) => ({ ...cur, [id]: st })))
+      .then((st) => { if (trLangRef.current === trLang) setTrStatus((cur) => ({ ...cur, [id]: st })); })
       .catch(() => { trAsked.current.delete(id); });
   };
   useEffect(() => {
     if (!trOn || !activeChapter || activeChapter.offline) return;
     askTranslation(activeChapter.id, Math.max(1, pageInChapter));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trOn, activeChapter?.id]);
+  }, [trOn, activeChapter?.id, trLang]);
   const trHere = activeChapter ? trStatus[activeChapter.id] : undefined;
   useEffect(() => {
     if (!trOn || !nextId || !trHere || trHere.pending > 0) return;
@@ -2069,7 +2079,7 @@ function ReaderInner() {
       if (document.visibilityState !== 'visible') return;
       for (const id of trPendingIds.split(' ')) {
         api<TranslateStatus>(`/api/books/${encodeURIComponent(id)}/translations?lang=${encodeURIComponent(trLang)}`)
-          .then((st) => setTrStatus((cur) => ({ ...cur, [id]: st })))
+          .then((st) => { if (trLangRef.current === trLang) setTrStatus((cur) => ({ ...cur, [id]: st })); })
           .catch(() => {});
       }
     }, 5000);
@@ -2611,6 +2621,8 @@ function ReaderInner() {
             onSpreadShift={applyShift}
             translate={translate}
             onTranslate={trOffer?.available ? applyTranslate : undefined}
+            translateLang={trLang}
+            onTranslateLang={trOffer?.available ? applyTranslateLang : undefined}
             device={device}
             setDevice={setDevice}
             autoApplied={autoApplied}
