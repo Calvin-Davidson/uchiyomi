@@ -16,8 +16,8 @@ const urlFor = (to: UploadTarget, name: string): string =>
     ? `seriesId=${encodeURIComponent(to.seriesId)}`
     : `title=${encodeURIComponent(to.title)}&fresh=1${to.visibility ? `&visibility=${to.visibility}` : ''}${to.libraryId ? `&libraryId=${encodeURIComponent(to.libraryId)}` : ''}`}`;
 
-export const uploadChapter = (to: UploadTarget, f: File, expectedOwnerId = getCurrentUser()): Promise<Uploaded> =>
-  api<Uploaded>(urlFor(to, f.name), { method: 'POST', body: f, headers: { 'content-type': 'application/octet-stream' }, expectedOwnerId });
+export const uploadChapter = (to: UploadTarget, f: File, expectedOwnerId = getCurrentUser(), storedName = f.name): Promise<Uploaded> =>
+  api<Uploaded>(urlFor(to, storedName), { method: 'POST', body: f, headers: { 'content-type': 'application/octet-stream' }, expectedOwnerId });
 
 export const IMAGE_ACCEPT = '.jpg,.jpeg,.png,.webp,.gif,.avif';
 export const IMAGE_MAX_PAGES = 2000;
@@ -101,20 +101,24 @@ export function uploadRefusal(e: unknown, name: string): string {
 export interface UploadRun { done: number; failed: string[]; failedFiles: string[]; seriesId: string | null; taken?: boolean; cancelled?: boolean }
 
 /**
- * Every file, one after another, in name order (Chapter 2 before Chapter 10 is the scanner's business: it reads the
- * number from the name). A refusal is kept and the run goes on, so one bad file does not cost the rest.
+ * Files upload in natural filename order by default (Chapter 2 before Chapter 10). When numbering by list order,
+ * keep the supplied order and stored names so the scanner reads the assigned chapter numbers. A refusal is kept
+ * and the run goes on, so one bad file does not cost the rest.
  */
-export async function uploadAll(to: UploadTarget, files: File[], onFile?: (i: number, f: File) => void, expectedOwnerId = getCurrentUser()): Promise<UploadRun> {
-  const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+export async function uploadAll(to: UploadTarget, files: File[], onFile?: (i: number, f: File) => void, expectedOwnerId = getCurrentUser(), numberByOrder = false, storedNames?: string[]): Promise<UploadRun> {
+  const ordered = numberByOrder ? files : [...files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const run: UploadRun = { done: 0, failed: [], failedFiles: [], seriesId: null };
-  for (const [i, f] of sorted.entries()) {
+  for (const [i, f] of ordered.entries()) {
     // Capture once for the whole queue: a later file must never inherit a newly active account.
     if (getCurrentUser() !== expectedOwnerId) { run.cancelled = true; break; }
     onFile?.(i, f);
     // A new series' title is checked on its first file only; the rest join what that one made.
     const here: UploadTarget = run.seriesId ? { seriesId: run.seriesId } : to;
     try {
-      const r = await uploadChapter(here, f, expectedOwnerId);
+      // When the person chose list order for a new series, give the stored files explicit chapter numbers.
+      // The archive bytes remain untouched; only the filename used by the library scanner changes.
+      const storedName = numberByOrder ? (storedNames?.[i] ?? `Chapter ${i + 1}${f.name.match(/\.[^.]+$/)?.[0] ?? ''}`) : f.name;
+      const r = await uploadChapter(here, f, expectedOwnerId, storedName);
       run.done++;
       if (r.seriesId) run.seriesId = r.seriesId;
       if (r.indexed === false) {

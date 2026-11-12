@@ -20,7 +20,7 @@ function useUpload(onDone: (run: UploadRun) => void) {
   const toast = useToast();
   const qc = useQueryClient();
   const [at, setAt] = useState<{ i: number; n: number } | null>(null);
-  const start = async (to: UploadTarget, files: File[], imageChapter?: string) => {
+  const start = async (to: UploadTarget, files: File[], imageChapter?: string, numberByOrder = false, storedNames?: string[]) => {
     if (!files.length || !mounted.current || !ownerId || getCurrentUser() !== ownerId) return;
     setAt({ i: 0, n: imageChapter ? 1 : files.length });
     let run: UploadRun;
@@ -29,7 +29,7 @@ function useUpload(onDone: (run: UploadRun) => void) {
         const r = await uploadImageChapter(to, imageChapter, files, ownerId);
         run = { done: 1, failed: r.indexed === false ? [tr('{name} was stored, but indexing is pending. Run a library scan before retrying.', { name: imageChapter })] : [], failedFiles: [], seriesId: r.seriesId ?? null };
       } catch (error) { run = { done: 0, failed: [uploadRefusal(error, imageChapter)], failedFiles: files.map(f => f.name), seriesId: null }; }
-    } else run = await uploadAll(to, files, (i) => setAt({ i, n: files.length }), ownerId);
+    } else run = await uploadAll(to, files, (i) => setAt({ i, n: files.length }), ownerId, numberByOrder, storedNames);
     if (!mounted.current || getCurrentUser() !== ownerId || run.cancelled) return;
     setAt(null);
     // Everything that lists what was just stored: the series' own rows (its chapter list is `series-books`, not only its
@@ -83,6 +83,8 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
   const [chapter, setChapter] = useState('');
   const [title, setTitle] = useState('');
   const [files, setFiles] = useState<File[]>([]);
+  const [numberByOrder, setNumberByOrder] = useState(false);
+  const orderedNames = useRef(new Map<File, string>());
   const [made, setMade] = useState<{ id: string; title: string } | null>(null);
   const [takenTitle, setTakenTitle] = useState<string | null>(null);
   const { at, start } = useUpload((run) => {
@@ -103,6 +105,25 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
   const ready = (!!into || (!!title.trim() && scope.ready)) && !taken && (mode === 'images' ? images.length > 0 && !!chapter.trim() : files.length > 0) && !at;
   const add = (more: File[]) => setFiles((had) => [...had, ...more.filter((f) => !had.some((h) => h.name === f.name))]
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
+  const moveFile = (at: number, by: number) => setFiles(had => {
+    const next = [...had], target = at + by;
+    if (target >= 0 && target < next.length) [next[at], next[target]] = [next[target], next[at]];
+    return next;
+  });
+  const chapterFileNames = () => {
+    const used = new Set([...orderedNames.current.values()].map(name => Number(/^Chapter (\d+)/.exec(name)?.[1])).filter(Number.isFinite));
+    let next = 1;
+    return files.map(file => {
+      let name = orderedNames.current.get(file);
+      if (!name) {
+        while (used.has(next)) next++;
+        name = `Chapter ${next}${file.name.match(/\.[^.]+$/)?.[0] ?? ''}`;
+        orderedNames.current.set(file, name);
+        used.add(next++);
+      }
+      return name;
+    });
+  };
   const addImages = (more: File[]) => {
     const picked = orderedImagePages(more);
     if (picked.multipleFolders) { toast(tr('Choose images from one chapter folder.'), 'error'); return; }
@@ -124,7 +145,7 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
           // Named, so the page says which series the files go into (#375): this series, or the one this page just made.
           ? (intoTitle ? tr('Add chapter files to “{title}”. Existing files are never overwritten. The chapter number is read from each file name.', { title: intoTitle })
             : tr('Add chapter files to this series. Existing files are never overwritten. The chapter number is read from each file name.'))
-          : tr('For a series no source has, when you already have its chapters. The files go into the download folder, under Uploads, and the chapter number is read from each file name.')}
+          : tr('For a series no source has, when you already have its chapters. The files go into the download folder, under Uploads. By default, each chapter number is read from its file name.')}
       </p>
       {!seriesId && <><label htmlFor={uid} className="mb-1 block text-xs font-semibold uppercase tracking-wider text-fog-500">{tr('Title')}</label>
       <input data-upload-title id={uid} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={300} dir="auto" disabled={!!at}
@@ -164,14 +185,25 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
         <button type="button" onClick={() => input.current?.click()} disabled={!!at} className="btn-key">{tr('Choose files…')}</button>
         {files.length > 0 && !at && <button type="button" onClick={() => setFiles([])} className="chip text-xs">{tr('Clear all')}</button>}
       </div>
+      {!seriesId && files.length > 0 && <label className="mt-3 flex max-w-prose items-start gap-2 text-xs leading-relaxed text-fog-400">
+        <input type="checkbox" checked={numberByOrder} onChange={e => setNumberByOrder(e.target.checked)} disabled={!!at} className="mt-0.5 accent-accent" />
+        <span>{tr('Use this order for chapter numbers. Files will be named Chapter 1, Chapter 2, and so on; move them below to set the order.')}</span>
+      </label>}
       {files.length > 0 && (
         <ul className="mt-3 divide-y divide-ink-700 rounded-xl border border-ink-700" data-upload-files>
-          {files.map((f) => (
+          {files.map((f, i) => (
             <li key={f.name} className="flex items-center gap-2 px-3 py-2 text-sm">
+              <span className="w-6 shrink-0 text-fog-500">{numberByOrder ? orderedNames.current.get(f)?.match(/^Chapter (\d+)/)?.[1] ?? i + 1 : i + 1}</span>
               <span className="min-w-0 flex-1 truncate text-fog-200" dir="auto">{f.name}</span>
               {!at && (
+                <>
+                <button type="button" onClick={() => moveFile(i, -1)} disabled={i === 0} aria-label={tr('Move file up')}
+                  className="chip disabled:opacity-30">↑</button>
+                <button type="button" onClick={() => moveFile(i, 1)} disabled={i === files.length - 1} aria-label={tr('Move file down')}
+                  className="chip disabled:opacity-30">↓</button>
                 <button type="button" onClick={() => setFiles((had) => had.filter((h) => h !== f))} aria-label={tr('Remove')}
                   className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-fog-500 hover:text-fog-100"><IcX width={14} height={14} /></button>
+                </>
               )}
             </li>
           ))}
@@ -179,7 +211,7 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
       )}
       </>}
 
-      <button type="button" onClick={() => void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility }, mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined)} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
+      <button type="button" onClick={() => void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility }, mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined, numberByOrder && !seriesId, numberByOrder && !seriesId ? chapterFileNames() : undefined)} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
         {at && <ProgressRing progress="spin" size={14} />}
         {at ? progressText(at) : tr('Upload')}
       </button>
