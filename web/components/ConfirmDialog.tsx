@@ -7,6 +7,7 @@
 //
 // `confirmText` asks the user to type the name of what they are about to change. Worth the friction only
 // where the action moves other people's data — deleting a series a household is reading, merging two.
+import { refusalBody, requestFailure } from '@/lib/refusals';
 import { useEffect, useRef, useState } from 'react';
 import { t as tr } from '@/lib/i18n';
 import { saidText } from '@/lib/said';
@@ -73,7 +74,7 @@ export function Modal({
   // is capped at the viewport minus that band and the top padding (7.5 rem = 5.5 + 1 + 1); from `lg` up it
   // is the centred 88vh dialog it always was. The same 5.5 rem the Sheet's `overBottomNav` uses.
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/70 p-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] backdrop-blur-xs lg:pb-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/70 p-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] backdrop-blur-xs lg:pb-4" data-shell-modal onClick={onClose}>
       <div
         ref={ref}
         role="dialog"
@@ -207,3 +208,15 @@ export const msgOf = (e: any, fallback: string): string => {
     return fallback;
   }
 };
+
+// What did not happen, then why. The action's own words carry what a generic reason cannot ("The list was created, but
+// this series could not be added."); said alone, a dropped connection made someone create the list again.
+export const actionFailure = (error: unknown, fallback: string): string => {
+  const reason = requestFailure(error);
+  return reason ? tr('{action}. {reason}', { action: fallback.trim().replace(/[.。．!！?？]+$/u, ''), reason }) : msgOf(error, fallback);
+};
+
+export const listActionFailure = (error: unknown, fallback: string): string =>
+  refusalBody(error)?.error === 'not_found'
+    ? tr('This list is no longer available to your account. Refresh your lists.')
+    : actionFailure(error, fallback);

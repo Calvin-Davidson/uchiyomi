@@ -1,4 +1,5 @@
 'use client';
+import { actionFailure } from '@/components/ConfirmDialog';
 import { publicServerURL } from '@/lib/native';
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -10,7 +11,9 @@ import type { Series } from '@/lib/types';
 import { useToast } from './Toast';
 import { useContextMenu, type MenuItem } from './ContextMenu';
 import { useArchiveEnqueue } from './ArchiveQueue';
+import { requestFailure } from '@/lib/refusals';
 import { MoveToLibrary } from './MoveToLibrary';
+import { moveSeriesToLibrary } from '@/lib/moveLibrary';
 
 /**
  * A series card's menu (#100): the few things worth doing without opening the series, from wherever it is on
@@ -37,12 +40,12 @@ export function useSeriesMenu(series: Series) {
     for (const key of [['library'], ['home'], ['collection'], ['series', series.id], ['series-books', series.id]]) qc.invalidateQueries({ queryKey: key });
   };
   // The Library's bulk routes, for a selection of one: the same permission checks, and the same answer shape.
-  const bulk = async (path: string, extra: Record<string, unknown>, done: string) => {
+  const bulk = async (path: string, extra: Record<string, unknown>, done: string, failure: string) => {
     try {
       const r = await api<{ applied: number }>(path, { json: { seriesIds: [series.id], ...extra } });
       toast(r.applied ? done : tr('That series is no longer in the library'), r.applied ? 'success' : 'error');
       settle();
-    } catch { toast(tr('Could not do that'), 'error'); }
+    } catch (error) { toast(requestFailure(error) ?? failure, 'error'); }
   };
 
   // Move library (admins): the picker is a dialog, so the menu's `element` carries it along with the menu itself.
@@ -60,17 +63,17 @@ export function useSeriesMenu(series: Series) {
     },
     {
       label: favourite ? tr('Remove from favourites') : tr('Favourite'), divider: true, disabled: offline,
-      onSelect: () => bulk('/api/favorites/bulk', { favorite: !favourite }, favourite ? tr('Removed from favourites') : tr('Added to favourites')),
+      onSelect: () => bulk('/api/favorites/bulk', { favorite: !favourite }, favourite ? tr('Removed from favourites') : tr('Added to favourites'), favourite ? tr('Could not remove this series from favourites.') : tr('Could not add this series to favourites.')),
     },
-    { label: tr('Mark all read'), disabled: offline, onSelect: () => bulk('/api/library/bulk/read', { completed: true }, tr('Marked read')) },
-    { label: tr('Mark all unread'), disabled: offline, onSelect: () => bulk('/api/library/bulk/read', { completed: false }, tr('Marked unread')) },
+    { label: tr('Mark all read'), disabled: offline, onSelect: () => bulk('/api/library/bulk/read', { completed: true }, tr('Marked read'), tr('Could not mark this series as read.')) },
+    { label: tr('Mark all unread'), disabled: offline, onSelect: () => bulk('/api/library/bulk/read', { completed: false }, tr('Marked unread'), tr('Could not mark this series as unread.')) },
     ...(isAdmin ? [{
       label: tr('Check for new chapters'), divider: true, disabled: offline,
       onSelect: async () => {
         try {
           await api(`/api/admin/series/${encodeURIComponent(series.id)}/check`, { method: 'POST', json: {} });
           toast(tr('Checking for new chapters…'), 'info', { busy: true });
-        } catch { toast(tr('Could not do that'), 'error'); }
+        } catch (error) { toast(actionFailure(error, tr('Could not check this series for new chapters.')), 'error'); }
       },
     }] : []),
     ...(isAdmin ? [{ label: tr('Move library'), disabled: offline, onSelect: () => setMoving(true) }] : []),
@@ -84,15 +87,13 @@ export function useSeriesMenu(series: Series) {
   const menu = useContextMenu(items, { label: series.metadata?.title || series.name });
   // Portalled out of the card, as the menu is: a card is tilted and clipped, and a fixed dialog inside it would be too.
   const picker = moving && typeof document !== 'undefined' ? createPortal(
-    <MoveToLibrary n={1} busy={moveBusy} onClose={() => setMoving(false)} onPick={async (libraryId) => {
+    <MoveToLibrary n={1} busy={moveBusy} current={{ libraryId: series.libraryId }} onClose={() => setMoving(false)} onPick={async (libraryId, options) => {
       setMoveBusy(true);
       try {
-        await api(`/api/admin/series/${encodeURIComponent(series.id)}/library`, { json: { libraryId } });
-        toast(tr('1 series updated'), 'success');
+        const result = await moveSeriesToLibrary([series.id], libraryId, options);
         settle();
-      } catch { toast(tr('Could not do that'), 'error'); }
-      setMoveBusy(false);
-      setMoving(false);
+        return result;
+      } finally { setMoveBusy(false); }
     }} />,
     document.body,
   ) : null;

@@ -6,7 +6,16 @@ import { q } from './db';
 import { roleOf } from './auth';
 import { viewCtxFor } from './visibility';
 import { privateFolderOwner } from './contentScope';
-import { claimPrivateContentRead } from './privateFence';
+import { claimPrivateContentRead, type PrivacyLease } from './privateFence';
+
+const adminReadLease = Symbol('adminReadLease');
+type GuardedRequest = FastifyRequest & { [adminReadLease]?: PrivacyLease };
+/** Release this request's read lease only when handing off to an exclusive visibility writer. */
+export function releasePrivateAdminRead(req: FastifyRequest): void {
+  const held = req as GuardedRequest;
+  held[adminReadLease]?.release();
+  delete held[adminReadLease];
+}
 
 const targetKeys=new Set(['id','ids','series','seriesId','seriesIds','series_id','bookId','bookIds','book_id','libraryId','library_id','of','with','withId','from','into','intoId','fromId','targetId']);
 function targets(value:unknown,out:Set<string>,key='',depth=0,allStrings=false):void{
@@ -51,6 +60,7 @@ export async function privateAdminContentGuard(req:FastifyRequest,reply:FastifyR
       OR EXISTS(SELECT 1 FROM lib_books b WHERE b.series_id=s.id AND b.id=ANY($1::text[]))`,[[...ids]]);
     const lease=claimPrivateContentRead(rows.map(r=>r.id));
     if(!lease)return reply.code(404).send({error:'not_found'});
+    (req as GuardedRequest)[adminReadLease]=lease;
     reply.raw.once('finish',()=>lease.release());reply.raw.once('close',()=>lease.release());
   }
   if((await forbiddenIds(ids,uid)).size)return reply.code(404).send({error:'not_found'});
@@ -71,6 +81,11 @@ export async function privateAdminResponse(req:FastifyRequest,reply:FastifyReply
   const privatePath=(v:unknown):boolean=>typeof v==='string' && [...v.matchAll(/_private\/[0-9a-f-]{36}(?:\/[^\s"']*)?/gi)]
     .some(m=>privateFolderOwner(m[0])!==uid);
   const scrub=(value:unknown):unknown=>{
+    // A value that says how it is written (a Date, above all) is scrubbed as what it is written as. Rebuilt from its
+    // entries, every timestamp under /api/admin went out as {} and read "Invalid Date": removed series, members' last
+    // active, sessions, the audit log, import batches (#437's screenshot). Reintroduce by dropping this line:
+    // privateAdminResponse.int.test.ts reads {}.
+    if(value && typeof value==='object' && typeof (value as {toJSON?:unknown}).toJSON==='function')return scrub((value as {toJSON:()=>unknown}).toJSON());
     if(Array.isArray(value))return value.map(scrub).filter(v=>v!==undefined);
     if(!value || typeof value!=='object')return privatePath(value)||typeof value==='string'&&denied.has(value)?undefined:value;
     const source=value as Record<string,unknown>;

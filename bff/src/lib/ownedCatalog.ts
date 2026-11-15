@@ -1,13 +1,14 @@
 // Owned catalog backend: a drop-in for the `komga` client, returning Komga-shaped series/book DTOs from
 // the lib_* tables. enrichSeries/booksForUser in catalog.ts then add per-user state exactly as before.
 import { q, one } from './db';
-import { cbzPageDims, cbzPages, DL_ROOT, LIBRARY_ROOT, persistScan } from './library';
+import { cbzPageDims, cbzPages, DL_ROOT, LIBRARY_ROOT, pagesInNameOrder, persistScan } from './library';
 import { encryptedBookId, ENCRYPTED_MEDIA_TYPE } from './encryptedMedia';
 import { ViewCtx, Params, visible, browsable, ADULT_RATING } from './visibility';
 import { cleanDescription } from './htmlText';
 import { effectiveLang } from './seriesLang';
 import { noticeBook, noticeShown, visibleBookCount } from './noticeChapters';
 import { rangeEnd, numberText } from './chapterRanges';
+import { chapterName as extractChapterName, pageCmp } from './naming';
 import { anilistScoreOf } from './anilistScores';
 import { AUTO_DETAILS, authorOf, genresOf, summaryOf } from './autoDetailsSql';
 import { lineHas, nameKeys } from './authorNames';
@@ -93,7 +94,10 @@ const booksSrc = (ctx: ViewCtx, p: Params, alias = 'bv') => `(
          b.updated_at, b.fingerprint, b.scanlator, b.source_id, b.pruned_at, b.pruned_reason, b.size, b.missing_pages, b.chapter_name,
          COALESCE(ov.number, b.number) AS number,
          ${rangeEnd('b', 'ov')} AS number_end,
-         COALESCE(ov.title,  b.title)  AS title
+         COALESCE(ov.title,  b.title)  AS title,
+         -- Only a title the admin changed. Edit chapter sends the title back with every save, so a number-only
+         -- edit stores the file's own title, and reading that as a name showed "Chapter 12" for chapter 13.
+         CASE WHEN ov.title IS DISTINCT FROM b.title THEN ov.title END AS title_override
     FROM lib_books b
     -- The join that was missing. This carried zero references to lib_series, so a book id alone opened a
     -- chapter of a hidden series and next/previous then walked the whole thing. Every series-level rule --
@@ -200,7 +204,13 @@ function bookDto(r: any) {
     metadata: { title: r.title, number: numberText(num, end), numberSort: num, summary: '', releaseDate: released },
     // The chapter's own name as its source gave it (lib/library.ts chapterName), null when it had none. NOT
     // `name`/`metadata.title`, which are the filename's and keep saying so for every client that prints them.
-    chapterName: r.chapter_name ?? null,
+    // An admin's explicit title override is the name they chose in Edit chapter. Use the same
+    // number-aware extraction as source titles, so "Chapter 12: The Return" displays as "The Return" (#438).
+    // A plain "Chapter 12" intentionally clears the displayed name. Without an override, or when the
+    // override is only the file's title sent back unchanged, keep the source's chapter name; never derive
+    // one from the filename. Reintroduce by selecting ov.title as is: "a number-only edit keeps the
+    // chapter's name" in chapterNames.int.test.ts reads "Chapter 1".
+    chapterName: r.title_override != null ? extractChapterName(r.title_override, num) : (r.chapter_name ?? null),
     // Who released the file on disk and which adapter it came from (setBookMeta in lib/library.ts). Both
     // null for a book the scanner found rather than the downloader wrote. These are read through booksSrc's
     // explicit column list above: a name dropped there does not error, it silently reads as null here.
@@ -910,7 +920,12 @@ export const owned = {
       return listed;
     };
     if (Array.isArray(r.page_dims) && r.page_dims.length && (!cleanup.revision || !contentVersion || r.page_dims_version === contentVersion)) {
-      return stable(r.page_dims.map((pd, i) => mark({ number: i + 1, fileName: pd.name, mediaType: mediaType(pd.name), width: pd.width ?? null, height: pd.height ?? null, sizeBytes: null })));
+      // The cache keeps the order its pages were measured in. Read it in today's page order, so sizes measured before
+      // pageCmp (#436) never show a folder-wrapped archive's pages in the old order, or out of step with the numbers
+      // page cleanup removes pages by. Reintroduce by returning page_dims as stored: "cached page sizes follow the
+      // page order" in archiveFormats.test.ts reads 10.png second.
+      const dims = pagesInNameOrder(r.file) ? [...r.page_dims].sort((a, b) => pageCmp(a.name, b.name)) : r.page_dims;
+      return stable(dims.map((pd, i) => mark({ number: i + 1, fileName: pd.name, mediaType: mediaType(pd.name), width: pd.width ?? null, height: pd.height ?? null, sizeBytes: null })));
     }
     const dims = await cbzPageDims(`${r.root || LIBRARY_ROOT}/${r.file}`).catch(() => [] as Array<{ name: string; width: number | null; height: number | null }>);
     // This is a cache, so a failed write must never hide readable pages; but once this call resolves a

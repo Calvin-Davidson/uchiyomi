@@ -1,4 +1,6 @@
-import { privateAdminContentGuard, privateAdminResponse } from '../lib/privateAdmin';
+import { fileSeriesInLibrary, filingLibrary, type FilingSeries } from '../lib/libraryMove';
+import { claimPrivateContentChange, type PrivacyLease } from '../lib/privateFence';
+import { privateAdminContentGuard, privateAdminResponse, releasePrivateAdminRead } from '../lib/privateAdmin';
 import { hash } from '@node-rs/argon2';
 import { isIP } from 'node:net';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -117,9 +119,11 @@ import { refileFailures } from '../lib/chapterFailures';
 import { prepareCleanup, cleanupPreview, cleanupConfirmation, purgeLeftovers, purgeRefusal, unlistedOf, CleanupRefused } from '../lib/sourceLeftovers';
 import { mainUses, retireSource } from '../lib/retireSource';
 import { sourcesOverview } from '../lib/sourcesOverview';
-import { titlesFromBackup, entriesFromBackup, type BackupEntry } from '../lib/tachibk';
-import { resolveAddScope, scopeSql, samePrivacyDomainSql, ContentScopeError, deleteAccountPreservingPrivate, type AddScope } from '../lib/contentScope';
+import { titlesFromBackup, entriesFromBackup, type BackupEntry, type BackupTracker } from '../lib/tachibk';
+import { resolveAddScope, scopeSql, samePrivacyDomainSql, reservedPrivateFolder, ContentScopeError, deleteAccountPreservingPrivate, type AddScope } from '../lib/contentScope';
 import { normalizeImportEntries, trackerLinksOf, importSkipKeys, type ImportEntry } from '../lib/importMetadata';
+import { importMatchNeedsReview } from '../lib/importMatchReview';
+import { importReadProgress, readUpTo } from '../lib/importProgress';
 import { linkSeries, seedTrackerFloor, rememberTrackerPrivacy, TOKEN_EXPIRED, TOKEN_REJECTED, TOKEN_UNREADABLE } from '../lib/trackers';
 import { ADAPTERS, PROVIDERS, LIST_STATUSES, TRACKER_LIST_MAX, type Provider, type LibraryEntry } from '../lib/trackerProviders';
 import { open as unseal } from '../lib/secretbox';
@@ -193,6 +197,8 @@ interface ImportBatchRow {
   /** How many titles not in the library came after the 500 (#410); null when not counted. */
   left_over: number | null;
   content_scope: AddScope | null; remaining_entries: ImportEntry[]; remaining_count?: number; next_batch_id: string | null;
+  /** Mark chapters I've read (#433): whether this batch marks what its rows say was read. */
+  mark_read: boolean;
   created_at: string; updated_at: string;
 }
 /**
@@ -214,6 +220,18 @@ interface ImportCandidateRow {
   /** Tracker rows only (migrate.ts says what each is for); null / empty on the other intakes. */
   tracker: string | null; external_id: string | null; alt_titles: string[]; matched_via: string | null; progress: number | null;
   tracker_links?: unknown; ambiguous?: boolean; content_scope?:AddScope|null;
+  /** The chapters the backup has marked read, and how many this import marked here (#433; migrate.ts). */
+  read_numbers?: number[]; marked_read?: number;
+}
+
+/** Older persisted suggestions obey the same review rule as new matches, even with explicit /run ids. */
+async function enforceImportReview(batchId: string): Promise<void> {
+  const pending = await q<Pick<ImportCandidateRow, 'id' | 'confidence' | 'backup_title' | 'alt_titles' | 'match_title' | 'backup_url' | 'backup_source_id_unsigned' | 'backup_source_id_signed' | 'match_source'>>(
+    `SELECT id, confidence, backup_title, alt_titles, match_title, backup_url, backup_source_id_unsigned, backup_source_id_signed, match_source FROM import_candidates
+     WHERE batch_id=$1 AND decision='auto' AND status IS NULL AND NOT ambiguous`, [batchId]);
+  const ids = pending.filter(importMatchNeedsReview).map((r) => r.id);
+  if (ids.length) await q(`UPDATE import_candidates SET ambiguous=true, auto_ambiguous=true
+    WHERE batch_id=$1 AND id=ANY($2) AND decision='auto' AND status IS NULL`, [batchId, ids]);
 }
 
 /**
@@ -264,6 +282,27 @@ async function linkImportedSeries(
     }
   }
   return linked;
+}
+
+/**
+ * Mark what an import row says was read (#433) on the series it now is: the chapters its backup has marked read, and
+ * every chapter at or below how far its trackers say the person got (lib/importProgress.ts says how, and why nothing is
+ * pushed). `owner` is the batch's, for the reason linkImportedSeries gives; the callers mark only on a batch started
+ * with Mark chapters I've read on. The count rides on the row, `row` by its id or by its place in the batch, for the
+ * done line. Best effort, as the link is: a failure leaves the row unmarked and never fails the import.
+ */
+async function markImportedRead(
+  row: { id: string } | { batchId: string; ord: number }, readNumbers: readonly number[], links: BackupTracker[],
+  seriesId: string, owner: string,
+): Promise<number> {
+  try {
+    const marked = await importReadProgress(owner, seriesId, readNumbers, readUpTo(links));
+    if (marked > 0) {
+      if ('id' in row) await q('UPDATE import_candidates SET marked_read = marked_read + $2 WHERE id = $1', [row.id, marked]);
+      else await q('UPDATE import_candidates SET marked_read = marked_read + $3 WHERE batch_id = $1 AND ord = $2', [row.batchId, row.ord, marked]);
+    }
+    return marked;
+  } catch { return 0; }
 }
 
 /**
@@ -3114,67 +3153,48 @@ export default async function adminRoutes(app: FastifyInstance) {
    *
    * Passing null unpins it and lets the folder rule decide again, which is the way back out.
    */
-  app.post('/api/admin/series/:id/library', async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const b = z.object({ libraryId: z.string().min(1).max(64).nullable() }).safeParse(req.body);
-    if (!b.success) return reply.code(400).send({ error: 'bad_request' });
-
-    const series = await one<{ folder: string }>('SELECT folder FROM lib_series WHERE id = $1', [id]);
-    if (!series) return reply.code(404).send({ error: 'not_found' });
-    if (await one('SELECT 1 FROM lib_series WHERE id=$1 AND is_private',[id])) return reply.code(409).send({error:'use_privacy_action'});
-    if (b.data.libraryId && await one('SELECT 1 FROM libraries WHERE id=$1 AND managed_private',[b.data.libraryId])) return reply.code(409).send({error:'use_privacy_action'});
-
-    if (b.data.libraryId === null) {
-      const libs = await libraryRows();
-      await q('UPDATE lib_series SET library_id = $2, library_pinned = false WHERE id = $1',
-        [id, libraryIdFor(series.folder, libs)]);
-      await logAudit('series.library', { userId: userIdOf(req), detail: { id, libraryId: null }, req });
-      return { ok: true, pinned: false };
-    }
-
-    const lib = await one<{ id: string }>('SELECT id FROM libraries WHERE id = $1', [b.data.libraryId]);
-    if (!lib) return reply.code(404).send({ error: 'no_such_library' });
-    await q('UPDATE lib_series SET library_id = $2, library_pinned = true WHERE id = $1', [id, b.data.libraryId]);
-    await logAudit('series.library', { userId: userIdOf(req), detail: { id, libraryId: b.data.libraryId }, req });
-    return { ok: true, pinned: true };
-  });
-
-  /**
-   * The same move, for a selection.
-   *
-   * Looping the single-series route from the browser would work and would fire one request per title; a
-   * bulk move of a whole shelf is exactly the case where that is worst. Reports what it skipped rather
-   * than quietly applying to fewer series than were ticked, which is the shape every other bulk route here
-   * already uses.
-   */
-  app.post('/api/admin/series/library', async (req, reply) => {
-    const b = z.object({
-      seriesIds: z.array(z.string().min(1).max(64)).min(1).max(500),
-      libraryId: z.string().min(1).max(64).nullable(),
-    }).safeParse(req.body);
-    if (!b.success) return reply.code(400).send({ error: 'bad_request' });
-
-    if (await one('SELECT 1 FROM lib_series WHERE id=ANY($1) AND is_private',[b.data.seriesIds])) return reply.code(409).send({error:'use_privacy_action'});
-    if (b.data.libraryId && await one('SELECT 1 FROM libraries WHERE id=$1 AND managed_private',[b.data.libraryId])) return reply.code(409).send({error:'use_privacy_action'});
-    const found = await q<{ id: string; folder: string }>(
-      'SELECT id, folder FROM lib_series WHERE id = ANY($1)', [b.data.seriesIds]);
-    const skipped = b.data.seriesIds.filter((id) => !found.some((f) => f.id === id)).map((id) => ({ id }));
-
-    if (b.data.libraryId === null) {
-      const libs = await libraryRows();
-      for (const s of found) {
-        await q('UPDATE lib_series SET library_id = $2, library_pinned = false WHERE id = $1',
-          [s.id, libraryIdFor(s.folder, libs)]);
+  const fileSelection = async (req: FastifyRequest, reply: FastifyReply, ids: string[], libraryId: string | null, confirmed: boolean, single = false) => {
+    const uid = userIdOf(req);
+    const target = libraryId === null ? null : await filingLibrary(libraryId);
+    if (libraryId !== null && !target) return reply.code(404).send({error:'no_such_library'});
+    if (target?.managed_private && target.owner_user_id !== uid) return reply.code(404).send({error:'not_found'});
+    const unique = [...new Set(ids)];
+    const found = await q<FilingSeries>('SELECT id,folder,library_id,is_private,owner_user_id,work_id,deleted_at,merged_into FROM lib_series WHERE id=ANY($1::text[])',[unique]);
+    if (found.some(s=>s.is_private && s.owner_user_id!==uid)) return reply.code(404).send({error:'not_found'});
+    if (single && !found.length) return reply.code(404).send({error:'not_found'});
+    const changes = target ? found.filter(s=>s.is_private!==target.managed_private) : [];
+    // Entire batch preflight precedes ANY filing, including mixed shared/private selections.
+    if (changes.length && !confirmed) return reply.code(409).send({error:'visibility_confirmation_required',visibility:target!.managed_private?'private':'shared',count:changes.length});
+    releasePrivateAdminRead(req);
+    const leases: PrivacyLease[] = [];
+    try {
+      for (const row of found) {
+        const lease = claimPrivateContentChange(row.id);
+        if (!lease) return reply.code(409).send({error:'busy',message:'Another request is using this series. Try again when it finishes.'});
+        leases.push(lease);
       }
-    } else {
-      const lib = await one<{ id: string }>('SELECT id FROM libraries WHERE id = $1', [b.data.libraryId]);
-      if (!lib) return reply.code(404).send({ error: 'no_such_library' });
-      await q('UPDATE lib_series SET library_id = $2, library_pinned = true WHERE id = ANY($1)',
-        [found.map((s) => s.id), b.data.libraryId]);
-    }
-    await logAudit('series.library', {
-      userId: userIdOf(req), detail: { n: found.length, libraryId: b.data.libraryId }, req });
-    return { applied: found.length, skipped };
+      const skipped: {id:string;reason?:string;message?:string}[] = unique.filter(id=>!found.some(s=>s.id===id)).map(id=>({id}));
+      let applied = 0;
+      for (const row of found) {
+        const outcome = await fileSeriesInLibrary(row,target,uid,claimSeriesWriter);
+        if (outcome.ok) applied++;
+        else if (single) return reply.code(409).send({error:outcome.code??'file_operation_failed',message:outcome.reason,fix:outcome.fix});
+        else skipped.push({id:row.id,reason:outcome.code??'file_operation_failed',message:outcome.reason});
+      }
+      // Which series, as the audit log always said: the first 100 of a large selection are enough to find the rest.
+      await logAudit('series.library',{userId:uid,detail:{n:applied,libraryId,visibilityChanges:changes.length,ids:found.map(r=>r.id).slice(0,100)},req});
+      return single ? {ok:true,pinned:libraryId!==null} : {applied,skipped};
+    } finally { for (const lease of leases) lease.release(); }
+  };
+  app.post('/api/admin/series/:id/library', async (req, reply) => {
+    const body = z.strictObject({libraryId:z.string().min(1).max(64).nullable(),confirmVisibilityChange:z.boolean().optional()}).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({error:'bad_request'});
+    return fileSelection(req,reply,[(req.params as {id:string}).id],body.data.libraryId,body.data.confirmVisibilityChange===true,true);
+  });
+  app.post('/api/admin/series/library', async (req, reply) => {
+    const body = z.strictObject({seriesIds:z.array(z.string().min(1).max(64)).min(1).max(500),libraryId:z.string().min(1).max(64).nullable(),confirmVisibilityChange:z.boolean().optional()}).safeParse(req.body);
+    if (!body.success) return reply.code(400).send({error:'bad_request'});
+    return fileSelection(req,reply,body.data.seriesIds,body.data.libraryId,body.data.confirmVisibilityChange===true);
   });
 
   app.post('/api/admin/series/:id/rename-folder', async (req, reply) => {
@@ -3212,40 +3232,46 @@ export default async function adminRoutes(app: FastifyInstance) {
     pagedDirection: z.enum(['ltr', 'rtl', 'series']).optional(),
   });
 
-  app.get('/api/admin/libraries', async () => {
-    const rows = await q<{ id: string; name: string; path: string; paths: string[]; age_rating: number | null; anilist_lookup: boolean; reader_prefs: unknown; n: number; pinned: number; members: string[] }>(
+  app.get('/api/admin/libraries', async (req) => {
+    const viewer = await viewCtxFor(userIdOf(req),roleOf(req));
+    const counts = new Params();
+    const countable = visible('s',viewer,counts);
+    const owner = counts.add(userIdOf(req));
+    const candidatesParams = new Params();
+    const candidateVisible = visible('s',viewer,candidatesParams);
+    const rows = await q<{ id: string; name: string; path: string; paths: string[]; age_rating: number | null; anilist_lookup: boolean; reader_prefs: unknown; managed_private: boolean; owner_user_id: string | null; n: number; pinned: number; members: string[] }>(
       // `paths`: every folder it holds (v0.55.1, #148), the first -- `path`, all a v0.55.0 reads -- first, then by name.
-      `SELECT l.id, l.name, l.path, l.age_rating, l.anilist_lookup, l.reader_prefs,
+      `SELECT l.id, l.name, l.path, l.age_rating, l.anilist_lookup, l.reader_prefs, l.managed_private, l.owner_user_id,
               (SELECT coalesce(array_agg(lp.path ORDER BY lp.path <> l.path, lp.path), '{}') FROM library_paths lp
                 WHERE lp.library_id = l.id) AS paths,
-              (SELECT count(*)::int FROM lib_series s WHERE s.library_id = l.id AND ${visibleToAll('s')}) AS n,
+              (SELECT count(*)::int FROM lib_series s WHERE s.library_id = l.id AND ${countable}) AS n,
               (SELECT count(*)::int FROM lib_series s WHERE s.library_id = l.id AND s.library_pinned
-                 AND ${visibleToAll('s')}) AS pinned,
+                 AND ${countable}) AS pinned,
               -- Who can open it. A member with NO grant rows sees every library, so they count as allowed
               -- here even though nothing links them to this row -- which is what the UI has to show, or
               -- "nobody can see this" would be wrong for a brand-new install.
               (SELECT coalesce(array_agg(u.id), '{}') FROM users u
-                WHERE u.role <> 'admin'
+                WHERE u.role <> 'admin' AND (NOT l.managed_private OR u.id=l.owner_user_id)
                   AND (NOT EXISTS (SELECT 1 FROM user_libraries ul WHERE ul.user_id = u.id)
                        OR EXISTS (SELECT 1 FROM user_libraries ul WHERE ul.user_id = u.id AND ul.library_id = l.id))
               ) AS members
-         FROM libraries l ORDER BY l.sort_order, l.name`,
+         FROM libraries l WHERE NOT l.managed_private OR l.owner_user_id=${owner}::uuid ORDER BY l.sort_order, l.name`, counts.values,
     );
     // Candidate subdirectories: folders that hold series but are not yet a library. Annotated where the name
     // matches a known source, because that is the case an admin should NOT usually promote.
-    const sources = new Set((await q<{ source: string }>('SELECT DISTINCT source FROM lib_series')).map((r) => r.source));
+    const sources = new Set((await q<{ source: string }>(`SELECT DISTINCT source FROM lib_series s WHERE ${candidateVisible}`,candidatesParams.values)).map((r) => r.source));
     const taken = new Set(rows.flatMap((r) => r.paths));
     // EVERY ancestor of every series folder, not just the first segment. The top level of a real library
     // root holds source names written by the downloader -- which this list then flags as such -- so offering
     // only that level meant the one folder an admin actually wanted was unreachable.
     const seen = new Map<string, number>();
-    for (const r of await q<{ folder: string }>(`SELECT folder FROM lib_series s WHERE ${visibleToAll('s')}`)) {
+    for (const r of await q<{ folder: string }>(`SELECT folder FROM lib_series s WHERE ${candidateVisible}`,candidatesParams.values)) {
       const parts = r.folder.split('/');
       // Stop before the last segment: that is the series folder itself, and a library of exactly one series
       // is not a library.
       for (let i = 1; i < parts.length; i++) {
         const prefix = parts.slice(0, i).join('/');
-        if (!prefix || taken.has(prefix)) continue;
+        if (!prefix || reservedPrivateFolder(prefix) || taken.has(prefix)) continue;
         seen.set(prefix, (seen.get(prefix) ?? 0) + 1);
       }
     }
@@ -4636,6 +4662,8 @@ export default async function adminRoutes(app: FastifyInstance) {
           origin: z.literal('tracker').optional(),
           tracker: z.enum(PROVIDERS as [Provider, ...Provider[]]).optional(),
           statuses: z.array(z.enum(LIST_STATUSES)).min(1).max(LIST_STATUSES.length).optional(),
+          // Mark chapters I've read (#433). Off unless asked: a script that never heard of it imports titles, as before.
+          markRead: z.boolean().optional(),
         })
         .safeParse(req.body);
       if (!b.success) return reply.code(400).send({ error: 'bad_request' });
@@ -4662,6 +4690,8 @@ export default async function adminRoutes(app: FastifyInstance) {
       let tracker: Provider | null = null;
       let skippedNovels = 0;
       let capped = false;
+      // A continuation marks as the batch it continues does: the rest of one list under the one choice made for it.
+      const markRead = parent ? parent.mark_read === true : b.data.markRead === true;
       try {
         if (parent) {
           entries=normalizeImportEntries(parent.remaining_entries);
@@ -4845,20 +4875,23 @@ export default async function adminRoutes(app: FastifyInstance) {
         if(!locked || locked.next_batch_id) throw new Error('continuation_changed');
       }
       const [batch]=await qq<{id:string}>(
-        `INSERT INTO import_batches (user_id,origin,tracker,state,total,resolved,already,skipped_novels,truncated,left_over,content_scope,remaining_entries)
-         VALUES ($1,$2,$3,'resolving',$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb) RETURNING id`,
-        [userId,origin,tracker,entries.length,initialResolved,linkedAtIntake.filter(Boolean).length,skippedNovels,truncated,leftOver,JSON.stringify(scope),JSON.stringify(remainingEntries)]);
+        `INSERT INTO import_batches (user_id,origin,tracker,state,total,resolved,already,skipped_novels,truncated,left_over,content_scope,remaining_entries,mark_read)
+         VALUES ($1,$2,$3,'resolving',$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12) RETURNING id`,
+        [userId,origin,tracker,entries.length,initialResolved,linkedAtIntake.filter(Boolean).length,skippedNovels,truncated,leftOver,JSON.stringify(scope),JSON.stringify(remainingEntries),markRead]);
       const batchId=batch.id;
       // One round trip for up to 500 rows via unnest, rather than 500 sequential INSERTs. ⚠️ `alt_titles`
       // rides as `jsonb[]` (one JSON array per row) unpacked per row in the SELECT: `unnest` over a `text[][]`
-      // flattens it, and a plain `jsonb` cannot yield one array per row.
+      // flattens it, and a plain `jsonb` cannot yield one array per row. `read_numbers` rides the same way, for the
+      // same reason, cast to real number by number: the type the listing's numbers have (#433).
       await qq(
         `INSERT INTO import_candidates (batch_id, ord, backup_title, backup_source_id_unsigned, backup_source_id_signed, backup_url, in_library, decision,
-                                        tracker, external_id, alt_titles, progress, status, matched_via, tracker_links, ambiguous, content_scope)
+                                        tracker, external_id, alt_titles, progress, status, matched_via, tracker_links, ambiguous, content_scope, read_numbers)
          SELECT $1, o, t, su, ss, u, il, CASE WHEN il OR sk THEN 'skip' ELSE 'unresolved' END,
-                tr, ex, ARRAY(SELECT jsonb_array_elements_text(x.al))::text[], pr, st, mv, tl, am, cs
+                tr, ex, ARRAY(SELECT jsonb_array_elements_text(x.al))::text[], pr, st, mv, tl, am, cs,
+                ARRAY(SELECT jsonb_array_elements_text(x.rn)::real)::real[]
          FROM unnest($2::int[], $3::text[], $4::text[], $5::text[], $6::text[], $7::boolean[],
-                     $8::text[], $9::text[], $10::jsonb[], $11::int[], $12::text[], $13::text[], $14::boolean[], $15::jsonb[], $16::boolean[], $17::jsonb[]) AS x(o, t, su, ss, u, il, tr, ex, al, pr, st, mv, sk, tl, am, cs)`,
+                     $8::text[], $9::text[], $10::jsonb[], $11::int[], $12::text[], $13::text[], $14::boolean[], $15::jsonb[], $16::boolean[], $17::jsonb[],
+                     $18::jsonb[]) AS x(o, t, su, ss, u, il, tr, ex, al, pr, st, mv, sk, tl, am, cs, rn)`,
         [
           batchId,
           entries.map((_, i) => i),
@@ -4877,6 +4910,7 @@ export default async function adminRoutes(app: FastifyInstance) {
           entries.map(e=>JSON.stringify(trackerLinksOf(e))),
           entries.map(e=>{const links=trackerLinksOf(e);return links.some(l=>links.some(o=>l.provider===o.provider && l.externalId!==o.externalId)) || new Set(links.map(l=>linkedTo.get(entryScope(e).key+'|'+l.provider+':'+l.externalId)?.id).filter(Boolean)).size>1;}),
           entries.map(e=>JSON.stringify(entryScope(e))),
+          entries.map((e) => JSON.stringify(e.readNumbers ?? [])),
         ],
       );
       if(parent) await qq('UPDATE import_batches SET next_batch_id=$2,updated_at=now() WHERE id=$1',[parent.id,batchId]);
@@ -4890,9 +4924,17 @@ export default async function adminRoutes(app: FastifyInstance) {
         await linkImportedSeries({ tracker: e.tracker ?? null, external_id: e.externalId ?? null, backup_title: e.title, progress: e.progress ?? null, tracker_links:trackerLinksOf(e) }, owned[i]!.id, userId,entryScope(e),origin==='backup');
         linked++;
       }
+      // What the file or list says was read, on the titles already here (#433): an owned row starts skipped, so /run
+      // never reaches it, and this is its one chance. A row the import adds is marked at /run, once its series exists.
+      // Reintroduce by dropping the loop: "a backup marks what it says was read on the titles already here" finds nothing read.
+      let marked = 0;
+      if (markRead) for (let i = 0; i < entries.length; i++) {
+        if (owned[i]) marked += await markImportedRead({ batchId, ord: i }, entries[i].readNumbers ?? [], trackerLinksOf(entries[i]), owned[i]!.id, userId);
+      }
       await logAudit('import.batch.start', {
         userId, req,
-        detail: { batchId, origin, count: entries.length, ...(tracker ? { tracker, statuses: b.data.statuses ?? ['reading', 'plan_to_read'], skippedNovels, linked } : {}) },
+        detail: { batchId, origin, count: entries.length, ...(tracker ? { tracker, statuses: b.data.statuses ?? ['reading', 'plan_to_read'], skippedNovels, linked } : {}),
+          ...(markRead ? { markRead, marked } : {}) },
       });
       void resolveBatch(batchId).catch(() => {});
       started = true;
@@ -4907,6 +4949,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (!id) return reply;
     let batch = await one<ImportBatchRow>('SELECT * FROM import_batches WHERE id = $1 AND user_id=$2', [id,userIdOf(req)]);
     if (!batch) return reply.code(404).send({ error: 'not_found' });
+    await enforceImportReview(id);
     // An `importing` batch this process is not importing was stranded by a restart mid-run. Back to
     // `review`: the rows /run never reached still have no status and are still ready, and /run only ever
     // picks up rows without one, so the admin can simply press Import again -- or to `done` when every
@@ -4938,8 +4981,10 @@ export default async function adminRoutes(app: FastifyInstance) {
     const fallbackVisibility=linkedParams.add(scope.visibility), fallbackLibrary=linkedParams.add(scope.libraryId), owner=linkedParams.add(userIdOf(req));
     const rowVisibility=`COALESCE(c.content_scope->>'visibility',${fallbackVisibility})`, rowLibrary=`COALESCE(c.content_scope->>'libraryId',${fallbackLibrary})`;
     const linkedScope=`((${rowVisibility}='private' AND s.is_private AND s.owner_user_id=${owner}::uuid) OR (${rowVisibility}='shared' AND NOT s.is_private AND s.library_id=${rowLibrary}))`;
-    const items = await q<ImportCandidateRow & { linked: boolean }>(
-      `SELECT c.*, EXISTS (SELECT 1 FROM series_trackers st JOIN lib_series s ON s.id=st.series_id
+    // `read_to` stands in for `read_numbers` (#433): the row says how far the backup was read, and a list of up to 5,000
+    // numbers per row, polled every 1.5 s while the batch works, is not what a caption needs.
+    const items = await q<ImportCandidateRow & { linked: boolean; read_to: number | null }>(
+      `SELECT c.*, (SELECT max(n) FROM unnest(c.read_numbers) AS n) AS read_to, EXISTS (SELECT 1 FROM series_trackers st JOIN lib_series s ON s.id=st.series_id
         WHERE ${linkedScope} AND s.deleted_at IS NULL AND s.merged_into IS NULL AND
         ((st.provider=c.tracker AND st.external_id=c.external_id) OR EXISTS
           (SELECT 1 FROM jsonb_array_elements(c.tracker_links) l WHERE l->>'provider'=st.provider AND l->>'externalId'=st.external_id))) AS linked
@@ -4947,7 +4992,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     // A batch stuck in 'resolving' with nobody actually resolving it (this process restarted mid-pass) is
     // stale: the UI offers Resume instead of a progress bar that will never move again.
     const stale = batch.state === 'resolving' && resolvingBatch !== id;
-    return { batch: { ...batchDto(batch), stale }, items };
+    return { batch: { ...batchDto(batch), stale }, items: items.map(({ read_numbers: _readNumbers, ...item }) => item) };
   });
 
   app.post('/api/admin/import/batches/:id/resume', async (req, reply) => {
@@ -4978,7 +5023,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   });
 
   const applyImportDecision = async (req:FastifyRequest, batchId:string|null, ids:string[], body:
-    {decision:'skip'|'auto'|'manual';source?:string;sourceId?:string;title?:string;coverUrl?:string}) => {
+    {decision:'skip'|'auto'|'manual'|'confirm';source?:string;sourceId?:string;title?:string;coverUrl?:string}) => {
     const uid=userIdOf(req), viewer=await viewCtxFor(uid,roleOf(req));
     return tx(async qq=> {
       const [batch]=await qq<ImportBatchRow>(batchId
@@ -4991,10 +5036,21 @@ export default async function adminRoutes(app: FastifyInstance) {
       const rows=await qq<ImportCandidateRow>('SELECT * FROM import_candidates WHERE batch_id=$1 AND id=ANY($2::uuid[]) FOR UPDATE',[batch.id,[...new Set(ids)]]);
       if(rows.length!==new Set(ids).size) return {status:404,error:'not_found'};
       if(body.decision==='skip' && rows.every(r=>r.in_library && r.decision==='skip' && !r.status)) return {status:200,batchId:batch.id,updated:0};
-      if(rows.some(r=>!!r.status || r.in_library)) return {status:409,error:'already_processed'};
+      if(body.decision!=='confirm' && rows.some(r=>!!r.status || r.in_library)) return {status:409,error:'already_processed'};
       if(body.decision==='auto' && rows.some(r=>!r.auto_source_id)) return {status:409,error:'no_auto_match'};
       const rowScope=candidateScopes(viewer,scope);
+      let updated=0;
       for(const row of rows) {
+        // Confirm selected (#425): a held suggestion accepted as it stands, what "Confirm this match" does one row at a time.
+        // Its provenance stays. A row with nothing held is left as it is, so a broad selection is never a mistake.
+        if(body.decision==='confirm') {
+          if(row.status || row.in_library || row.decision!=='auto' || !row.ambiguous || !row.match_source_id) continue;
+          const keys=importSkipKeys(row),target=await rowScope(row);
+          if(keys.length) await qq('DELETE FROM import_scoped_skips WHERE user_id=$1 AND scope_key=$2 AND key=ANY($3)',[uid,target.key,keys]);
+          await qq("UPDATE import_candidates SET decision='manual',ambiguous=false WHERE id=$1",[row.id]);
+          updated++; continue;
+        }
+        updated++;
         const target=await rowScope(row);
         const keys=importSkipKeys(row);
         if(body.decision==='skip') {
@@ -5009,7 +5065,7 @@ export default async function adminRoutes(app: FastifyInstance) {
         }
       }
       await qq('UPDATE import_batches SET updated_at=now() WHERE id=$1',[batch.id]);
-      return {status:200,batchId:batch.id,updated:rows.length};
+      return {status:200,batchId:batch.id,updated};
     });
   };
   app.patch('/api/admin/import/candidates/:cid',async(req,reply)=> {
@@ -5024,6 +5080,16 @@ export default async function adminRoutes(app: FastifyInstance) {
       if(result.status!==200) return reply.code(result.status).send({error:result.error});
       if(body.data.decision==='skip') await closeBatchIfSettled(result.batchId!);
       return {ok:true};
+    } catch(error) { if(scopeReply(error,reply)) return reply; throw error; }
+  });
+  app.post('/api/admin/import/batches/:id/confirm',async(req,reply)=> {
+    const id=batchIdOf(req,reply); if(!id) return reply;
+    const body=z.object({candidateIds:z.array(z.string().uuid()).min(1).max(500)}).strict().safeParse(req.body);
+    if(!body.success) return reply.code(400).send({error:'bad_request'});
+    try {
+      const result=await applyImportDecision(req,id,body.data.candidateIds,{decision:'confirm'});
+      if(result.status!==200) return reply.code(result.status).send({error:result.error});
+      return {ok:true,updated:result.updated};
     } catch(error) { if(scopeReply(error,reply)) return reply; throw error; }
   });
   app.post('/api/admin/import/batches/:id/skip',async(req,reply)=> {
@@ -5071,6 +5137,8 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (batch.state === 'importing') return reply.code(409).send({ error: 'busy', message: 'This batch is already importing.' });
     if (batch.state === 'resolving') return reply.code(409).send({ error: 'still_resolving', message: 'Wait for matching to finish first.' });
 
+    await enforceImportReview(id);
+
     // Gated on decision + a match id + not already run, regardless of what the caller selected: a skipped
     // or still-unresolved row in `candidateIds` (an admin who pressed "Select all" rather than "Select ready
     // to import") is silently left out rather than erroring the whole request, and a row this same endpoint
@@ -5078,15 +5146,15 @@ export default async function adminRoutes(app: FastifyInstance) {
     // on the same batch -- after fixing the rows an admin found manually -- safe: it only ever picks up
     // what is newly ready.
     // `tracker`, `external_id`, `backup_title` and `progress` ride along so a tracker row can be linked
-    // (and floored) once its series exists, without a second read per row.
+    // (and floored) once its series exists, without a second read per row; `read_numbers` so it can be marked (#433).
     const selectedQuery = b.data.candidateIds
-        ? `SELECT id, match_source, match_source_id, tracker, external_id, backup_title, progress, alt_titles, tracker_links, content_scope FROM import_candidates
+        ? `SELECT id, match_source, match_source_id, tracker, external_id, backup_title, progress, alt_titles, tracker_links, content_scope, read_numbers FROM import_candidates
            WHERE batch_id = $1 AND decision IN ('auto','manual') AND (decision='manual' OR NOT ambiguous) AND match_source_id IS NOT NULL AND status IS NULL
              AND id = ANY($2) ORDER BY ord`
-        : `SELECT id, match_source, match_source_id, tracker, external_id, backup_title, progress, alt_titles, tracker_links, content_scope FROM import_candidates
+        : `SELECT id, match_source, match_source_id, tracker, external_id, backup_title, progress, alt_titles, tracker_links, content_scope, read_numbers FROM import_candidates
            WHERE batch_id = $1 AND decision IN ('auto','manual') AND (decision='manual' OR NOT ambiguous) AND match_source_id IS NOT NULL AND status IS NULL ORDER BY ord`;
     const selectedParams = b.data.candidateIds ? [id,b.data.candidateIds] : [id];
-    let rows = await q<{ id: string; match_source: string; match_source_id: string; tracker: string | null; external_id: string | null; backup_title: string; progress: number | null; alt_titles: string[] | null; tracker_links:unknown; content_scope:AddScope|null }>(selectedQuery,selectedParams);
+    let rows = await q<{ id: string; match_source: string; match_source_id: string; tracker: string | null; external_id: string | null; backup_title: string; progress: number | null; alt_titles: string[] | null; tracker_links:unknown; content_scope:AddScope|null; read_numbers: number[] | null }>(selectedQuery,selectedParams);
     if (!rows.length) return reply.code(400).send({ error: 'nothing_to_import', message: 'Nothing selected is ready to import.' });
 
     // The state checks above are advisory; THIS is the guard. Two /run requests that both read `review`
@@ -5100,6 +5168,7 @@ export default async function adminRoutes(app: FastifyInstance) {
     if (!claimed) return reply.code(409).send({ error: 'busy', message: 'This batch is already importing.' });
     importingBatches.add(id);
     // Decisions take the same batch-row lock as this claim. Re-read AFTER it: a skip that won the race must not be imported.
+    await enforceImportReview(id);
     rows=await q(selectedQuery,selectedParams);
     if(!rows.length) {
       importingBatches.delete(id);
@@ -5155,6 +5224,7 @@ export default async function adminRoutes(app: FastifyInstance) {
               await q(`UPDATE import_candidates SET status='already' WHERE id=$1`,[row.id]);
               await q(`UPDATE import_batches SET already=already+1,updated_at=now() WHERE id=$1`,[id]);
               await linkImportedSeries(row,held.id,owner,targetScope,batch.origin==='backup');
+              if (batch.mark_read) await markImportedRead({ id: row.id }, row.read_numbers ?? [], trackerLinksOf(row), held.id, owner);
               continue;
             }
             if(heldIds.size>1) {
@@ -5195,11 +5265,17 @@ export default async function adminRoutes(app: FastifyInstance) {
             }
             // Added, or the library had it: either way the series exists now, so a tracker row is linked to
             // the entry it came from and the OWNER's progress there becomes the owner's floor -- sync from
-            // the first chapter, and never a push below what the tracker already holds.
-            if (trackerLinksOf(row).length && (r.ok || r.error === 'duplicate')) {
+            // the first chapter, and never a push below what the tracker already holds. And what the row says was
+            // read is marked on it (#433): on a series just added, the listing the add wrote is what there is to mark.
+            // Reintroduce by marking only the `already` rows: "a title the import adds is marked from the listing its add wrote"
+            // finds no mark.
+            const links = trackerLinksOf(row);
+            const marks = batch.mark_read && (!!row.read_numbers?.length || readUpTo(links) > 0);
+            if ((links.length || marks) && (r.ok || r.error === 'duplicate')) {
               try {
                 const sid = await seriesIdOf(r,targetScope);
-                if (sid) await linkImportedSeries(row, sid, owner,targetScope,batch.origin==='backup');
+                if (sid && links.length) await linkImportedSeries(row, sid, owner,targetScope,batch.origin==='backup');
+                if (sid && marks) await markImportedRead({ id: row.id }, row.read_numbers ?? [], links, sid, owner);
               } catch { /* the add stands and is already counted; the row simply reads unlinked */ }
             }
           } catch {
@@ -5260,7 +5336,7 @@ export default async function adminRoutes(app: FastifyInstance) {
         live: h.live_at
           ? { at: h.live_at, by: h.live_by, state: h.live_state, stage: h.live_stage, code: h.live_code, checks: h.live_checks }
           : null,
-        evidence: stageLines(h.stages),
+        evidence: stageLines(h.stages, now),
       })),
       testMs: env.SOURCE_TEST_TIMEOUT_MS + 8000,
     };

@@ -1365,15 +1365,24 @@ the same display string.
 **Restore one deliberate tombstone by book id (v0.55.8).** A tombstone keeps its original `id`, `number`,
 `numberEnd`, title and the caller's `readProgress`; duplicate chapter numbers and ranges therefore remain distinct.
 `POST /api/books/:id/refetch` is the member-authorized restore used by a deleted ghost. It accepts no body and derives
-the only permitted copy from the row's stable book id, series, stored source and source-chapter id, and canonical
-download-root path. A client cannot supply or redirect any of them. The row must be visible to this account and
-deliberate rather than `missing`/`rescan_missing`. Its exact historical source need not still be followed: that stored
-identity is the authority, while its adapter must still be installed, enabled, outside cooldown and inside the
-account's age limit. The copy is pinned: an explicit restore may override the blocklist but never falls back to
-another copy. The standard download job answer is `{ok, started, folder, total}`; **404** deliberately covers an
-unknown/inaccessible id, and **409** `not_refetchable` covers a manual file, range, unsafe path, changed identity or
-canonical path, unavailable adapter, pending renumber or unwritable download root (`busy` while another writer owns
-the folder). Progress remains on the same book id when it lands.
+everything from the row's stable book id -- its series, number and canonical download-root path -- and the listing. A
+client cannot supply or redirect any of them. The row must be visible to this account and deliberate rather than
+`missing`/`rescan_missing`. Since [#437](https://github.com/AngeloSha/uchiyomi/issues/437) the copy is the one
+`POST /api/sources/fetch` takes for that number: the listing is refreshed first, and the release rules choose from the
+sources the series follows *now*, so a chapter deleted after the series moved to another source comes back from that
+one. That copy is not pinned: one that fails is taken from another followed source, as any Fetch's is. Only when no
+followed source lists the number is the copy stored on the row (its source and source-chapter id) asked: that source
+need not still be followed, but its adapter must still be installed, enabled, outside cooldown and inside the account's
+age limit, and the copy is pinned -- an explicit restore may override the blocklist but never falls back to another
+copy, and a change of the row's stored identity or canonical path while the job waits refuses it. The standard
+download job answer is `{ok, started, folder, total}`; **404** deliberately covers an unknown/inaccessible id;
+**403** `forbidden` when the copy a Fetch would take is on a source outside the age limit. Every **409** carries a
+`message` that says why and what to do: `busy` while another writer owns the folder, or `not_refetchable` with a
+`reason` -- `not_deleted`, `already_here`, `not_in_place` (a manual file, range or unsafe path), `renumber_pending`,
+`posting_order`, `hidden`, the Fetch's own `blocked_group`, `other_language`, `source_unavailable` or `cooldown`,
+`not_listed` (nothing the series follows lists the number and the stored copy cannot be asked) or `not_writable`
+(with `fix`). The route's own sentences carry `messageSaid` too, their code for the reader's language. Progress
+remains on the same book id when it lands.
 
 **Chapters the sources have that you don't.** `GET /api/series/:id/listing` answers
 `{checkedAt, content: [Ghost]}`: every chapter number the series' sources listed at the last check (the
@@ -2171,10 +2180,25 @@ a rejected push leaves — 422 rather than 401 because a 401 is retried after a 
 then read `not_connected`; the same code, without disabling, when the stored token cannot be unsealed),
 **502** `tracker_unavailable` (no answer; nothing changed — a 400 or a 403 from the service never disables
 anything: only a 401, or AniList's "Invalid token" 400, is a verdict on the token).
+Since v0.108.0 (#433) every intake also takes `markRead: true` — the page's **Mark chapters I've read**, off when
+omitted, so a script that does not send it imports titles alone, as before; a `continueFrom` batch keeps the choice of
+the one it continues. It marks what each row says was read, for the requesting admin: the chapters a backup has marked
+read (BackupManga's chapters; a chapter's page is not read, since two sources page one chapter differently) and every
+chapter at or below the highest progress its trackers give, a provider named twice with two different entries giving
+none — at intake for a title already in the library, at `/run` once a series is added or found. Each number is
+authorised as the series page's own read ticks are: a number the series holds is marked on its chapter (tombstones
+included), one its sources list and this server does not hold is a `listing_progress` mark with `source: 'import'`
+that becomes a read chapter when it lands, and any other number is skipped. Nothing is marked unread, a chapter already
+read is left as it is, no `reading_events` row is written and nothing is pushed to a tracker; each read is stamped just
+before its file's mtime (never later than now), so the read-chapter cleanup never takes it for a read of this server's
+copy. A file holding a range is marked only once the tracker's number reaches its last chapter, and a series numbered by
+posting order or by its chapter titles, or with a renumber pending, is left alone: its numbers are not another app's.
 `GET .../batches/:id` polls `{batch, items}` — each item's `decision` is `unresolved | auto | manual | skip`
 and, once the batch leaves `resolving`, an `unresolved` row means "no match found" rather than "not looked
 at yet"; a tracker row reads `linked: true` when a `series_trackers` row carries its id (read live, not
-remembered). A row's
+remembered). The batch carries `mark_read`; each item `read_to` (the highest chapter its backup has marked read, null
+when none — the read set itself stays on the server) and `marked_read` (how many chapters this import marked read for
+the row). A row's
 `confidence` is `same_source` only when the backup entry's own Mihon source is installed here (a Suwayomi
 extension) and a hit's extension-relative path equals the url the backup stored -- Mihon's identity for a
 manga, which survives a retitle -- otherwise `exact | contains | fuzzy` from the title alone; a title with no
@@ -2190,7 +2214,8 @@ uuid, or more than 500 of them, is **400** `bad_request`), omitted means every e
 Each row's `status` afterwards is `added`, `already` (the library has the title — the same folder, or the
 same title from another source under a spelling the up-front `in_library` check missed) or the add's error
 code (`no_title`, `no_chapters`, `disabled`, `blocked`, `undownloadable`, `disk_full`, `bad_request`, `error`);
-`already` counts under the batch's `already`, an error code under `failed`. A tracker row that ends `added`
+`already` counts under the batch's `already`, an error code under `failed`. On a `markRead` batch a row that ends
+`added` or `already` is marked as described above, counted in its `marked_read`. A tracker row that ends `added`
 or `already` is linked to its tracker entry (`series_trackers`, `linked_by` = **the account whose list was
 read**, the batch's `user_id` — batches are shared between admins, and whoever calls `/run`, the link and
 the floor are the owner's; the caller appears only in the `import.batch.run` audit row, whose `detail`
@@ -2286,7 +2311,7 @@ use, `series` counting the series the group appears on. Memoised for 30 seconds.
 
 **Deleting a chapter from the server, and fetching it again.** The series-wide delete/refetch controls below are admin
 actions on chosen chapters; the narrower `POST /api/books/:id/refetch` described under Library is available to a
-member who may download and restores only that tombstone's canonical stored copy. All touch the download directory
+member who may download and restores only that tombstone, onto its own row. All touch the download directory
 only: a chapter the scanner found in the read library is never
 touched (`owned: false` on the Book), on the same footing as the read-chapter cleanup. Neither takes a
 typed confirmation; the client confirms with the count.
@@ -3109,7 +3134,8 @@ them:
   the spec and the same base as `read_progress.page`. Panels, Chunky and KOReader read page by page over
   this instead of downloading the CBZ; everything else keeps using the acquisition link. Without `maxWidth`
   the original bytes are served (shared cache with the web reader); with it, a JPEG no wider than asked
-  (64–2000).
+  (64–2000). Under the account's `opdsEstimatedBookmarks` (below, with the external readers) a page fetched this
+  way keeps the reader's place, and reading a chapter through to the end counts as reading it (since v0.108.0).
 - **Facets (OPDS 1.2 §7).** `/opds/series` and `/opds/search` carry `rel="http://opds-spec.org/facet"`
   links in four `opds:facetGroup`s -- Sort, Library, Genre, Status -- each with `thresholdCount` (how many
   of *your* series it leaves) and `opds:activeFacet` on the one in force. The matching query parameters are
@@ -3564,6 +3590,7 @@ PUT /api/series/{id}/privacy
 POST /api/series/{id}/private-management
 GET /api/external-readers
 PUT /api/external-readers
+POST /api/admin/import/batches/{id}/confirm
 POST /api/admin/import/batches/{id}/skip
 GET /api/v1/kosync/users/auth
 POST /api/v1/kosync/users/create
@@ -3575,8 +3602,10 @@ Private additions use `visibility: private`; owner IDs are inferred from authent
 
 KOReader custom server: `https://your-server/api/v1/kosync`, Binary matching, API token as username and any dummy password. Give its token read/write scopes. A read-only token may pull but cannot push. Revocation/expiry and account/library restrictions apply. Documents not yet hashed or with ambiguous editions cannot update canonical progress. Hashing is bounded and follows scans. EPUB positions are preserved without inventing page boundaries.
 
-`externalReadingStats` and `opdsEstimatedBookmarks` are separate opt-ins, both off. Explicit small completion transitions can contribute counts at sync time, without estimated duration, streaks, badges or household ranking. First binding, bulk catch-up and duplicate delivery stay silent. OPDS page requests may be prefetches: estimates never complete chapters, append reading events or push trackers. Existing Incognito behavior remains private position with no events or tracker writes.
+`externalReadingStats` and `opdsEstimatedBookmarks` are separate opt-ins, both off. Explicit small completion transitions can contribute counts at sync time, without estimated duration, streaks, badges or household ranking. First binding, bulk catch-up and duplicate delivery stay silent. Existing Incognito behavior remains private position with no events or tracker writes.
+
+OPDS page streaming (`opdsEstimatedBookmarks`; since v0.108.0, [#377](https://github.com/AngeloSha/uchiyomi/issues/377)): a `GET /opds/book/:id/page/:n` answered **200** at reading size — `maxWidth` absent, blank, the unfilled `{maxWidth}`, or 600 and up; narrower is a thumbnail and is ignored — moves the account's estimated place in that chapter, which the feed gives as `pse:lastRead` where the account has no real progress there. The fetch that first reaches the last page (`pse:count`) completes the chapter when its sitting — the chapter's counted fetches with no gap of six hours — reached at least half the pages going forward and began at least max(20 s, 0.5 s × pages) earlier. So a preload of every page, a jump to the end or a run of thumbnails never completes one, and a reader that loads ahead may complete one a few pages early. Pages before the end stay estimates. A completion is written as a KOReader one is: the furthest page, never downgraded, a tracker push, and under `externalReadingStats` one `reading_events` row with `origin: "opds"` (which `GET /api/external-readers` counts in `byReader`, `[{origin, chapters}]`); Incognito keeps the place and completion privately and writes neither. It is marked as inferred, and the read-chapter cleanup deletes no file on an inferred completion until a real one replaces it: the web reader's, a KOReader push, or Mark read.
 
 Image chapter uploads keep `POST /api/library/upload`: select `images=1`, a `.cbz` chapter `name`, and either a visible `seriesId` or `fresh=1&title=...`. Send ordered multipart `pages` files. Validation and configured upload/free-space limits apply; publication never overwrites an existing file. New-series `visibility`/`libraryId` are authenticated choices; existing-series uploads inherit its scope.
 
-Reviewed imports remain admin-only and account-owned. A mixed batch uses its destination as a default; validated remote private flags force those rows into the owner’s private scope. `POST /api/admin/import/batches` also accepts `{continueFrom: completedBatchId}` to idempotently create/reuse the next saved batch after reload. Bulk skip uses the route above. Candidate responses include `tracker_links`, `content_scope`, `ambiguous`, `auto_ambiguous` and `auto_matched_via`; batch responses include `remainingCount`, `nextBatchId` and `canContinue`. Legacy skips are attributed only where retained owned batches establish their source; unattributable old records are retained without applying them to other accounts.
+Reviewed imports remain admin-only and account-owned. A mixed batch uses its destination as a default; validated remote private flags force those rows into the owner’s private scope. `POST /api/admin/import/batches` also accepts `{continueFrom: completedBatchId}` to idempotently create/reuse the next saved batch after reload. Bulk skip uses the route above. Candidate responses include `tracker_links`, `content_scope`, `ambiguous`, `auto_ambiguous` and `auto_matched_via` (and, since v0.108.0, `read_to` and `marked_read`); batch responses include `remainingCount`, `nextBatchId` and `canContinue` (and `mark_read`). Progress imported with `markRead` is the owner's alone and keeps each series' privacy: a private entry's chapters are marked on its private copy. Legacy skips are attributed only where retained owned batches establish their source; unattributable old records are retained without applying them to other accounts.

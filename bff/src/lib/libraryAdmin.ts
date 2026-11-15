@@ -1,5 +1,7 @@
 import { sameContentScope, privateFolderOwner, reservedPrivateFolder } from './contentScope';
 import { encryptedSeriesId } from './encryptedMedia';
+import { lockLibrarySaves } from './libraryFolders';
+import { visibleToAll } from './visibility';
 // Destructive library operations: hide a series, restore it, and merge one into another.
 //
 // Deleting HIDES rather than erases. The id survives, so favourites, ratings, notes and -- above all --
@@ -949,7 +951,7 @@ async function rootsOf(seriesId: string): Promise<string[]> {
   return rows.map((r) => r.root).filter(Boolean);
 }
 
-export interface FileOpRefusal { ok: false; reason: string; fix?: string }
+export interface FileOpRefusal { ok: false; reason: string; fix?: string; code?: string }
 
 /**
  * Delete a hidden series' files from disk.
@@ -1222,18 +1224,55 @@ async function rootProven(root: string, seriesId: string, present: number, absen
  * default and is a deliberate-refusal guesser (two chapters minimum, ambiguity refuses); when Uchiyomi
  * performs the rename it knows the mapping exactly, so guessing it back would be strictly worse.
  */
-export async function renameSeriesFolder(id: string, newFolder: string): Promise<{ ok: true } | FileOpRefusal> {
+export interface FilingVisibility {
+  /** Internal, already confirmed actor-owned transition; not a generic namespace bypass. */
+  userId: string;
+  isPrivate: boolean;
+  libraryId: string;
+  expected: {folder:string;libraryId:string;isPrivate:boolean;ownerUserId:string|null};
+  expectedLibrary: {path:string;paths:string[]};
+}
+export async function renameSeriesFolder(id: string, newFolder: string, visibility?: FilingVisibility): Promise<{ ok: true } | FileOpRefusal> {
   const row = await one<{ folder: string; library_id: string; is_private: boolean; owner_user_id: string | null }>(
     'SELECT folder, library_id, is_private, owner_user_id FROM lib_series WHERE id = $1', [id],
   );
   if (!row) return { ok: false, reason: 'That series no longer exists.' };
 
+  if (visibility && (row.folder!==visibility.expected.folder || row.library_id!==visibility.expected.libraryId || row.is_private!==visibility.expected.isPrivate || row.owner_user_id!==visibility.expected.ownerUserId))
+    return {ok:false,code:'catalogue_changed',reason:'The series changed. Please try again.'};
   const typed = toStoredRel(newFolder).replace(/^\/+|\/+$/g, '').trim();
-  if (!typed || typed === row.folder) return { ok: false, reason: 'Choose a different folder name.' };
-  if (privateFolderOwner(row.folder) !== privateFolderOwner(typed) || (reservedPrivateFolder(typed) && !privateFolderOwner(typed))) return {ok:false,reason:'A private storage folder must remain in its owner’s namespace.'};
+  if (!typed || typed.split('/').some(segment => segment === '.' || segment === '..') || (typed === row.folder && !visibility)) return { ok: false, reason: 'Choose a different folder name.' };
+  const transition = visibility && (row.owner_user_id === null || row.owner_user_id === visibility.userId)
+    && (visibility.isPrivate ? privateFolderOwner(typed) === visibility.userId : !reservedPrivateFolder(typed));
+  if (visibility && !transition) return { ok:false, reason:'The owner or destination does not allow that visibility change.' };
+  if (!transition && (privateFolderOwner(row.folder) !== privateFolderOwner(typed) || (reservedPrivateFolder(typed) && !privateFolderOwner(typed)))) return {ok:false,reason:'A private storage folder must remain in its owner’s namespace.'};
 
-  const roots = await rootsOf(id);
-  if (!roots.length) return { ok: false, reason: 'That series has no files on disk.' };
+  // A root that holds only tombstones (chapters deleted on purpose) and no longer has the folder has nothing to move. Renaming
+  // it ended in a raw ENOENT, so such a series could never be renamed or change visibility, and mkdirp left empty parent
+  // folders behind. Its rows still follow the new name below. Reintroduce by using rootsOf as is: "a root left with only
+  // deleted chapters" in libraryMove.int.test.ts answers 409.
+  const roots: string[] = [];
+  for (const root of await rootsOf(id)) {
+    const from = containedPath(root, row.folder);
+    const present = !!from && await stat(from).then(() => true, () => false);
+    if (!present && !(await one('SELECT 1 FROM lib_books WHERE series_id = $1 AND root = $2 AND pruned_at IS NULL LIMIT 1', [id, root]))) continue;
+    roots.push(root);
+  }
+  // A newly added title can have cover/metadata files before its first chapter is indexed.
+  // Include those real folders too; metadata-only transitions must not strand their bytes.
+  if (visibility) for (const root of new Set([LIBRARY_ROOT,DL_ROOT])) {
+    if (!root || roots.includes(root)) continue;
+    const from = containedPath(root,row.folder);
+    if (!from) return {ok:false,code:'unsafe_files',reason:'That folder path is not inside the library.'};
+    try {
+      const existing = await stat(from);
+      if (!existing.isDirectory()) return {ok:false,code:'unsafe_files',reason:'The series path is not a folder.'};
+      roots.push(root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return {ok:false,code:'unsafe_files',reason:'A series folder cannot be read. Check its storage before moving.'};
+    }
+  }
+  if (!roots.length && !visibility) return { ok: false, reason: 'That series has no files on disk.' };
   // The folder is absent under its stored spelling in every root but present under another case (`Manga/X` stored, `manga/X`
   // on disk, after a rename in a file manager): there is nothing at the stored name to move, and the raw ENOENT the rename
   // would end in says nothing useful. Refuse and name the spelling the disk uses; the next scan finds the series there.
@@ -1250,16 +1289,16 @@ export async function renameSeriesFolder(id: string, newFolder: string): Promise
   const dest = isDesktop() && typed.includes('/')
     ? `${await diskSpelling(roots, dirnameRel(typed))}/${typed.slice(typed.lastIndexOf('/') + 1)}`
     : typed;
-  if (dest === row.folder) return { ok: false, reason: 'Choose a different folder name.' };
+  if (dest === row.folder && !visibility) return { ok: false, reason: 'Choose a different folder name.' };
 
   const w = await allWritable(roots);
   if (!w.ok) return { ok: false, reason: w.reason, fix: w.fix };
 
   // Verify the destination is free in EVERY root first. rename() into an existing directory merges under
   // one filesystem and fails under another, so checking as we go would leave a half-applied move.
-  for (const root of roots) {
-    const to = containedPath(root, dest);
-    const from = containedPath(root, row.folder);
+  for (const root of dest === row.folder ? [] : roots) {
+    const to = await realContainedPath(root, dest);
+    const from = await realContainedPath(root, row.folder);
     if (!to || !from) return { ok: false, reason: 'That folder path is not inside the library.' };
     if (await stat(to).then(() => true).catch(() => false)) {
       // ⚠️ Desktop, case-insensitive disks: `Title` -> `title` finds `title` already there, because it IS
@@ -1273,8 +1312,13 @@ export async function renameSeriesFolder(id: string, newFolder: string): Promise
     }
   }
 
+  // A library that already holds this series is refused before any folder moves (from Calvin-Davidson's #432), rather
+  // than found in the catalogue step below and undone on disk. The step below asks again under the row lock.
+  if (visibility && await destinationHolds(q, id, dest, visibility.libraryId))
+    return {ok:false,code:'privacy_destination_conflict',reason:'That library already contains this series or folder.'};
+
   const done: Array<{ root: string; from: string; to: string }> = [];
-  for (const root of roots) {
+  for (const root of dest === row.folder ? [] : roots) {
     const from = containedPath(root, row.folder)!;
     const to = containedPath(root, dest)!;
     try {
@@ -1285,32 +1329,70 @@ export async function renameSeriesFolder(id: string, newFolder: string): Promise
       // Roll back what already moved. Two renames on two filesystems cannot be made atomic, so the honest
       // design is: verify hard, roll back, and if the rollback itself fails, say exactly what is now
       // inconsistent rather than pretending otherwise.
-      for (const d of done.reverse()) {
-        try { await rename(d.to, d.from); } catch {
-          return {
-            ok: false,
-            reason: `The rename failed partway and could not be undone. "${d.to}" should be "${d.from}". ` +
-                    'Nothing in the database was changed, so fix the folder names on disk and rescan.',
-          };
-        }
+      const failed: string[] = [];
+      for (const d of [...done].reverse()) {
+        try { await rename(d.to, d.from); } catch { failed.push(`"${d.to}" should be "${d.from}"`); }
       }
+      if (failed.length) return {ok:false,code:'file_operation_failed',reason:`The rename failed partway and could not be fully undone: ${failed.join('; ')}. Nothing in the database changed. Restore these names and rescan.`};
       return { ok: false, reason: `Could not rename the folder: ${(e as Error).message}` };
     }
   }
 
-  await tx(async (qq) => {
-    // The cached local artwork moves with its source folder. A stale destination candidate
-    // cannot abort the catalog transaction after the actual directories were already renamed.
-    await qq('DELETE FROM series_local_art WHERE series_id=$1 AND folder=$2', [id,dest]);
-    await qq('UPDATE series_local_art SET folder=$2 WHERE series_id=$1 AND folder=$3', [id,dest,row.folder]);
-    await qq('UPDATE lib_series SET folder_prev = folder, folder = $2 WHERE id = $1', [id, dest]);
-    await qq(
-      `UPDATE lib_books SET file = $2 || substring(file from length($3) + 1), updated_at = now()
-        WHERE series_id = $1 AND file LIKE $3 || '/%'`,
-      [id, dest, row.folder],
-    );
-  });
+  try {
+    await tx(async (qq) => {
+      if (visibility) await lockLibrarySaves(qq);
+      const [locked] = await qq<{folder:string;library_id:string;is_private:boolean;owner_user_id:string|null;work_id:string|null;deleted_at:unknown;merged_into:string|null}>(
+        'SELECT folder,library_id,is_private,owner_user_id,work_id,deleted_at,merged_into FROM lib_series WHERE id=$1 FOR UPDATE', [id]);
+      if (!locked || locked.folder !== row.folder || locked.library_id !== row.library_id || locked.is_private !== row.is_private || locked.owner_user_id !== row.owner_user_id)
+        throw new Error('The series changed while moving. Try again.');
+      if (visibility) {
+        if (locked.work_id || locked.deleted_at || locked.merged_into) throw new Error('Restore or unlink editions before changing visibility.');
+        const [lib] = await qq<{managed_private:boolean;owner_user_id:string|null;path:string;paths:string[]}>('SELECT l.managed_private,l.owner_user_id,l.path,ARRAY(SELECT p.path FROM library_paths p WHERE p.library_id=l.id ORDER BY p.path) AS paths FROM libraries l WHERE l.id=$1 FOR SHARE', [visibility.libraryId]);
+        if (!lib || lib.path!==visibility.expectedLibrary.path || JSON.stringify(lib.paths)!==JSON.stringify(visibility.expectedLibrary.paths) || lib.managed_private !== visibility.isPrivate || (visibility.isPrivate ? lib.owner_user_id !== visibility.userId : lib.owner_user_id !== null))
+          throw new Error('The destination library changed. Try again.');
+        if (await destinationHolds(qq, id, dest, visibility.libraryId))
+          throw Object.assign(new Error('That library already contains this series or folder.'),{code:'privacy_destination_conflict'});
+        // A series that reached anyone else, in either direction, is marked as having been shared: private_published_at is
+        // what keeps the owner's private Delete from erasing other members' progress, favourites and ratings with it
+        // (routes/privateLibrary.ts). Going private left it NULL, and a shared series looked as if it had never been shared.
+        // Reintroduce `CASE WHEN $2 THEN private_published_at ...`: "a shared series made private keeps..." in
+        // libraryMove.int.test.ts finds it NULL.
+        if (await qq('SELECT 1 FROM lib_series WHERE merged_into=$1 LIMIT 1', [id]).then((r) => r.length > 0))
+          throw Object.assign(new Error('Some of this series’ chapters are stored in another series’ folder.'), { code: 'unsafe_files' });
+        await qq(`UPDATE lib_series SET is_private=$2,owner_user_id=COALESCE(owner_user_id,$3::uuid),library_id=$4,library_pinned=true,
+          private_published_at=COALESCE(private_published_at,now()) WHERE id=$1`,
+          [id,visibility.isPrivate,visibility.userId,visibility.libraryId]);
+      }
+      // The cached local artwork moves with its source folder. A stale destination candidate
+      // cannot abort the catalog transaction after the actual directories were already renamed.
+      if (dest !== row.folder) {
+        await qq('DELETE FROM series_local_art WHERE series_id=$1 AND folder=$2', [id,dest]);
+        await qq('UPDATE series_local_art SET folder=$2 WHERE series_id=$1 AND folder=$3', [id,dest,row.folder]);
+        await qq('UPDATE lib_series SET folder_prev = folder, folder = $2 WHERE id = $1', [id, dest]);
+      }
+      await qq(
+        `UPDATE lib_books SET file = $2 || substring(file from length($3) + 1), updated_at = now()
+          WHERE series_id = $1 AND left(file,length($3)+1) = $3 || '/'`,
+        [id, dest, row.folder],
+      );
+    });
+  } catch (error) {
+    const failed: string[] = [];
+    for (const d of [...done].reverse()) {
+      try { await rename(d.to, d.from); } catch { failed.push(`"${d.to}" should be "${d.from}"`); }
+    }
+    if (failed.length) return {ok:false,code:'file_operation_failed',reason:`The database update failed and some folder moves could not be undone: ${failed.join('; ')}. Restore these names and rescan.`};
+    const code = (error as {code?:string}).code;
+    return {ok:false,code:code==='privacy_destination_conflict'||code==='unsafe_files'?code:'file_operation_failed',reason:`Could not update the catalogue; folder moves were undone. ${(error as Error).message}`};
+  }
   return { ok: true };
+}
+
+/** Another visible series already at `dest`, or this series' own source entry already in that library. */
+async function destinationHolds(qq: <R = any>(text: string, params?: any[]) => Promise<R[]>, id: string, dest: string, libraryId: string): Promise<boolean> {
+  return (await qq(`SELECT id FROM lib_series s WHERE s.id<>$1 AND (s.folder=$2 OR
+    (s.library_id=$3 AND s.source_id=(SELECT source_id FROM lib_series WHERE id=$1)
+      AND s.source_series_id=(SELECT source_series_id FROM lib_series WHERE id=$1) AND ${visibleToAll('s')})) LIMIT 1`, [id, dest, libraryId])).length > 0;
 }
 
 /** Is `real` inside `root` once the root is resolved the same way (realpath) the path was? */

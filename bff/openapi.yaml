@@ -6,7 +6,7 @@
 openapi: 3.1.0
 info:
   title: Uchiyomi API
-  version: 0.107.0
+  version: 0.108.1
   description: "Everything the web app does, it does over this API. Session JWTs are for the browser; scripts
     use a personal API token (Profile -> Connections -> API tokens), sent as `Authorization: Bearer uy_...`.
     Scopes: read (every token; GET plus the library search POST, which is a query), write (anything that changes data), admin (the /api/admin surface, which also
@@ -3064,14 +3064,17 @@ paths:
       summary: Restore one visible chapter that Uchiyomi deliberately deleted, by its stable book id.
       operationId: postApiBooksIdRefetch
       description: >-
-        Available to a member who may download. The server derives the only permitted copy from the tombstone:
-        its canonical download-root path, stored source and stored source chapter id. It accepts no client-supplied
-        source, chapter number or path. The exact historical source need not still be followed: the tombstone's
-        book id, series, stored source, stored source chapter id and canonical download-root path are its authority.
-        That source must still have an installed adapter, be enabled, be outside cooldown and be allowed by the
-        caller's age boundary. The copy is pinned, so this explicit choice may override a scanlator block, but it
-        never falls back to another copy. Ranges, manual/read-library files, missing evidence and a copy whose stored
-        identity or canonical path changed are not refetchable. Progress stays attached to the same book id.
+        Available to a member who may download. It accepts no client-supplied source, chapter number or path: the
+        server derives them from the tombstone (its series, number and canonical download-root path) and the listing.
+        Since #437 the copy is the one `POST /api/sources/fetch` takes for that number -- after the same listing
+        refresh, by the same rules, from a source the series follows now -- and it is not pinned, so a copy that fails
+        is taken from another followed source. Only when no followed source lists the number is the copy stamped on the
+        tombstone used (its stored source and source chapter id): that source need not still be followed, but it must
+        still have an installed adapter, be enabled, be outside cooldown and be allowed by the caller's age boundary,
+        and the copy is pinned, so this explicit choice may override a scanlator block but never falls back to another
+        copy, and a change of the tombstone's stored identity or canonical path while the job waits refuses it.
+        Ranges, manual/read-library files and chapters not deleted on purpose are not refetchable. Progress stays
+        attached to the same book id.
       parameters:
         - name: id
           in: path
@@ -3095,14 +3098,37 @@ paths:
         "401":
           description: Not authenticated
         "403":
-          description: Download permission is disabled for this account.
+          description: >-
+            Download permission is disabled for this account, or (`forbidden`) the copy a Fetch would take is on a
+            source outside the caller's age boundary.
         "404":
-          description: No such visible tombstone, or it is outside the caller's library or age boundary.
+          description: >-
+            No such visible tombstone, or it is outside the caller's library or age boundary -- as is a stored copy,
+            asked when no followed source lists the number, on a source outside that boundary.
         "409":
           description: >-
-            `not_refetchable`: the row is not a deliberate canonical owned tombstone, its exact stored copy is
-            unsafe or unavailable, a renumber is pending, or the download root is not writable; `busy`: another
-            writer owns this series folder.
+            `not_refetchable`, with `reason` naming the rule and `message` saying why and what to do (and, for this
+            route's own sentences, `messageSaid`, its code for the reader's language): `not_deleted` (not deleted on
+            purpose), `already_here`, `not_in_place` (a range, a manual/read-library file or a path the downloader did
+            not write), `renumber_pending`, `posting_order`, `hidden`, the copy's rule from `POST /api/sources/fetch`
+            (`blocked_group`, `other_language`, `source_unavailable`, `cooldown`), `not_listed` (no followed source
+            lists the number and the stored copy is missing or its source unloaded or switched off) or `not_writable`
+            (with `fix`); `busy` (with `message`): another writer owns this series folder.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, message]
+                properties:
+                  error: { type: string, enum: [not_refetchable, busy] }
+                  reason: { type: string }
+                  message: { type: string }
+                  messageSaid:
+                    type: object
+                    properties:
+                      code: { type: string }
+                      params: { type: object }
+                  fix: { type: string }
   /api/books/{id}/pages:
     get:
       tags:
@@ -8162,6 +8188,12 @@ paths:
       tags:
         - opds
       summary: One page for OPDS-PSE readers. ZERO-based; ?maxWidth (64-2000) returns a JPEG no wider than asked.
+      description: Since v0.108.0, with the account's opdsEstimatedBookmarks on, a GET answered 200 at reading size
+        (maxWidth absent, blank, the unfilled {maxWidth}, or 600 and up) keeps the reader's estimated place, and the
+        fetch that first reaches the last page completes the chapter (read_progress, trackers) when its sitting -- the
+        chapter's counted fetches with no six-hour gap -- reached at least half the pages going forward and began at
+        least max(20 s, 0.5 s per page) earlier. Pages before the end stay estimates. Under Incognito the place and the
+        completion are kept privately, with no reading event or tracker write.
       operationId: getOpdsBookIdPageN
       parameters:
         - name: id
@@ -11929,7 +11961,13 @@ paths:
         - admin
       summary: Move a series to another library.
       operationId: postApiAdminSeriesIdLibrary
-      description: Requires an admin account and a token carrying the admin scope. Scopes only ever restrict.
+      description: >-
+        Requires an admin account and admin token scope. Shared filing keeps files in place.
+        A visibility change into the actor's own private library or into shared storage requires
+        confirmVisibilityChange after a 409 visibility_confirmation_required response; the entire
+        selection is checked before any mutation. Automatic (null) preserves privacy. Other accounts'
+        private copies remain unavailable. Confirmed moves preserve identities and roll folders back
+        on database failure. Linked editions and conflicting destinations are refused.
       parameters:
         - name: id
           in: path
@@ -11937,17 +11975,24 @@ paths:
           schema:
             type: string
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required: [libraryId]
               properties:
                 libraryId:
-                  type: string
+                  type: [string, "null"]
+                confirmVisibilityChange:
+                  type: boolean
+                  default: false
       security:
         - bearer: []
       responses:
+        "409":
+          description: Visibility confirmation required (visibility and count supplied), busy reader/writer, conflicting destination, or refused file operation. No changes occur before confirmation.
         "200":
           description: OK
         "400":
@@ -11964,23 +12009,38 @@ paths:
         - admin
       summary: Move many series to a library.
       operationId: postApiAdminSeriesLibrary
-      description: Requires an admin account and a token carrying the admin scope. Scopes only ever restrict.
+      description: >-
+        Requires an admin account and admin token scope. Shared filing keeps files in place.
+        A visibility change into the actor's own private library or into shared storage requires
+        confirmVisibilityChange after a 409 visibility_confirmation_required response; the entire
+        selection is checked before any mutation. Automatic (null) preserves privacy. Other accounts'
+        private copies remain unavailable. Confirmed moves preserve identities and roll folders back
+        on database failure. Linked editions and conflicting destinations are refused.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              additionalProperties: false
+              required: [seriesIds, libraryId]
               properties:
                 seriesIds:
                   type: array
+                  minItems: 1
+                  maxItems: 500
                   items:
                     type: string
                 libraryId:
-                  type: string
+                  type: [string, "null"]
+                confirmVisibilityChange:
+                  type: boolean
+                  default: false
       security:
         - bearer: []
       responses:
+        "409":
+          description: Visibility confirmation required (visibility and count supplied), busy reader/writer, conflicting destination, or refused file operation. No changes occur before confirmation.
         "200":
           description: OK
         "400":
@@ -14303,6 +14363,21 @@ paths:
                     type: string
                     enum: [reading, plan_to_read, completed, on_hold, dropped]
                   description: Which of the person's lists to bring over. Defaults to reading + plan_to_read.
+                markRead:
+                  type: boolean
+                  description: >-
+                    Mark chapters I've read (since v0.108.0, #433). When true, what each row says was read is marked read
+                    for the requesting admin: the chapters a backup has marked read, and every chapter at or below the
+                    highest progress its trackers give (a provider named twice with two different entries gives none). At
+                    intake for a title already in the library, at /run once a series is added or found. A number the series
+                    holds is marked on its chapter; one its sources list and this server does not hold becomes a
+                    listing mark (source `import`) that turns into a read chapter when it lands; any other number is
+                    skipped. Never marks a chapter unread, never touches one already read, writes no reading_events, pushes
+                    nothing to a tracker, and stamps each read just before its file's mtime, so the read-chapter cleanup
+                    never takes it for a read of this server's copy. A file holding a range of chapters is marked only when
+                    the tracker's number reaches its last chapter; a series numbered by posting order or by its chapter
+                    titles, or with a renumber pending, is left alone. Off when omitted; a continuation (`continueFrom`)
+                    keeps the choice of the batch it continues.
       security:
         - bearer: []
       responses:
@@ -14345,7 +14420,11 @@ paths:
         the match was found under, null when the search title found it), `progress` (chapters read on the
         tracker) and `linked` — true when a `series_trackers` row carries this entry's id on that service,
         i.e. the series was linked at intake (a title already owned) or at /run (an added one); read live,
-        not remembered, so a row whose link did not happen never claims it.
+        not remembered, so a row whose link did not happen never claims it. Since v0.108.0 (#433) the batch
+        carries `mark_read` (whether it was started with `markRead`), and each item `read_to` (the highest
+        chapter its backup has marked read, null when none; the backup's whole read set stays on the server) and
+        `marked_read` (how many chapters this import marked read for the row: at intake for an owned title, at
+        /run otherwise).
       parameters:
         - name: id
           in: path
@@ -14450,7 +14529,10 @@ paths:
         current number and clears the stamp, so re-reading the list is how a downward correction on the
         tracker reaches this app. A push goes out once the local count exceeds the floor (equal to an
         unstamped floor is skipped quietly; equal to a stamped one, a number this app sent, still pushes);
-        the row then reads `linked: true` on GET.
+        the row then reads `linked: true` on GET. On a batch started with `markRead`, a row that ends `added` or
+        `already` also has what it says was read marked on its series for the batch's owner, as POST
+        /api/admin/import/batches describes, and counted in its `marked_read`; on a series just added, that is
+        the listing the add wrote.
       parameters:
         - name: id
           in: path
@@ -16304,7 +16386,8 @@ paths:
         - personal
       summary: Read the account’s external-reader options.
       description: Both externalReadingStats and opdsEstimatedBookmarks default off. External completions supply
-        counts only; page-fetch estimates do not constitute reading completion.
+        counts only; byReader lists them by origin (komga, koreader, opds). Since v0.108.0 opdsEstimatedBookmarks also
+        completes a chapter paged through to the end over OPDS page streaming (see /opds/book/{id}/page/{n}).
       operationId: getApiExternalReaders
       security:
         - bearer: []
@@ -16324,9 +16407,10 @@ paths:
     put:
       tags:
         - personal
-      summary: Save external-reader count and estimated-bookmark options.
+      summary: Save external-reader count and OPDS page-streaming tracking options.
       description: Does not backfill historical events. External completions never invent duration or affect
-        streaks, badges or household rankings.
+        streaks, badges or household rankings. opdsEstimatedBookmarks is the OPDS page-streaming switch (its v0.107.0
+        name), which since v0.108.0 keeps the reader's place and completes a chapter read to the end.
       operationId: putApiExternalReaders
       security:
         - bearer: []
@@ -16356,6 +16440,53 @@ paths:
               required:
                 - externalReadingStats
                 - opdsEstimatedBookmarks
+  /api/admin/import/batches/{id}/confirm:
+    post:
+      tags:
+        - admin
+      summary: Confirm the held suggestions among selected rows in an owned review batch.
+      description: Transactional and guarded against a concurrent import run. Only candidate IDs from this account’s
+        reviewable batch are accepted. Each selected row whose automatic suggestion is held for review is accepted as it
+        stands, as Confirm this match does for one row; other rows are left unchanged. Returns {ok, updated}.
+      operationId: postApiAdminImportBatchesIdConfirm
+      security:
+        - bearer: []
+      responses:
+        "200":
+          description: Success; restricted to the authenticated account and its content scope.
+        "400":
+          description: Malformed or unsupported input.
+        "401":
+          description: Not authenticated or revoked credential.
+        "403":
+          description: Insufficient token scope, account permission or registration disabled.
+        "404":
+          description: Not found, not visible, or no unique available book matches the document.
+        "409":
+          description: A concurrent operation or content-scope safety rule prevents this change.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                candidateIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items:
+                    type: string
+                    format: uuid
+              required:
+                - candidateIds
   /api/admin/import/batches/{id}/skip:
     post:
       tags:

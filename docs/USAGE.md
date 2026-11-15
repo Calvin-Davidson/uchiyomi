@@ -19,7 +19,7 @@ environment variables see [CONFIGURATION.md](CONFIGURATION.md).
 - [12. Backups & restore](#12-backups--restore)
 - [13. Troubleshooting & FAQ](#13-troubleshooting--faq)
 - [14. Uchiyomi Desktop](#14-uchiyomi-desktop) — the Windows and macOS app (beta), now in [its own guide](DESKTOP.md)
-- [Uchiyomi for iPhone and iPad](IOS.md) — private beta setup, offline reading and device acceptance
+- [Uchiyomi for iPhone and iPad](IOS.md) — beta setup, Actions-built IPAs, optional AltStore source, offline reading and device acceptance
 
 ---
 
@@ -1453,7 +1453,8 @@ two titles the sheet says *These look like different posts that share a number, 
 for an admin with **Number by posting order** (see *Chapter numbering* below). A chapter downloaded since v0.49.0
 also remembers the post it came from, so *on server* marks exactly that copy.
 
-**Fetch** beside a copy on a grey row takes exactly that copy, for anyone who may download. **Replace…**
+**Fetch** beside a copy on a grey row takes exactly that copy, for anyone who may download — on a deleted chapter's
+row too, where it lands on the deleted row. **Replace…**
 beside a copy of a chapter already here is admins only — and only on a file Uchiyomi downloaded, never one
 from a library you built, as with *Fetch again* — and is disabled on the copy already on disk: the sheet
 closes, *Replace with this version?* asks, and **Replace** is the *Fetch again* below with the copy named:
@@ -2310,8 +2311,9 @@ once, and **Check for extension updates** asks the repositories again. **Reload 
 Source packs**, re-scans after you drop a compiled source-plugin pack into `SOURCES_DIR`.
 
 **What a source's sheet knows** (since v0.49.0, #115). A source is checked in four steps — **Search**,
-**Chapter list**, **Page list** and **Images** (the Test and the daily check try the first three; images are seen
-when chapters download) — and Uchiyomi keeps what each was last seen doing and who saw it: the Test button, the
+**Chapter list**, **Page list** and **Images** (the daily check tries the first three; the Test button also loads the
+first page's image, as a download would, since v0.108.0; images are otherwise seen when chapters download) — and
+Uchiyomi keeps what each was last seen doing and who saw it: the Test button, the
 daily check, or normal use. A source with a failing step (above) reads *Failing*, and its sheet's **Details** has a
 line per step (✗ for the one that broke, when, and the engine's or site's own error, cut to two lines with the rest
 on hover), and keeps them after a reload; a Test opens **Details** on its answer. One whose last check passed says so
@@ -2319,8 +2321,10 @@ in one line. A failed Test or daily check marks its step
 failing at once; normal use does after three failures in a row at the same step. Only a later success at **that
 same step** clears it: a downloaded chapter says nothing about a broken search. A test that ran out of time reads
 *could not finish in time — not proof it is broken*, never *Failing*: raise `SOURCE_TEST_TIMEOUT_MS` (up to 120 s)
-for a source that keeps doing that behind a slow Cloudflare check. A Test never changes a cooldown. The same lines
-are on **Admin → Health** under *Source health*.
+for a source that keeps doing that behind a slow Cloudflare check. A Test never changes a cooldown: a site that answers its image
+with HTTP 429 is shown, not counted. Only failures that count now are drawn as failures: one failure in normal use, one
+more than a week old, or a cooldown is history, not *Failing*. The same lines are on **Admin → Health** under *Source
+health*.
 
 ### Replace a source
 
@@ -3108,6 +3112,10 @@ What it will not touch:
 * a chapter **somebody is partway through** -- one unfinished reader keeps it for everybody;
 * a chapter **nobody has read**;
 * a chapter anyone has **bookmarked** (a bookmark points at a page inside the file);
+* a chapter someone has read **only over OPDS page streaming** (since v0.108.0,
+  [#377](https://github.com/AngeloSha/uchiyomi/issues/377); section 9): that is worked out from the pages a reader
+  fetched, which a reader loading pages ahead fetches too, so the file stays until they read the chapter here or in
+  KOReader, or mark it read;
 * a chapter **the sources no longer list**, or list only in a way that cannot be downloaded (only from a group you
   blocked, or only as a link to the publisher, as MangaDex keeps a licensed chapter): the file here is the last copy.
   A file holding several chapters is kept if any one of them is missing. The list is the one from the last check that
@@ -3177,10 +3185,16 @@ it back; Mihon lists it as *not downloaded*, as the switch above would. Nothing 
 place, everyone's reading history and its counts, and it is still not downloaded again by itself. A chapter whose
 file *Verify chapter files* found missing is not one of these — the hourly check fetches those back — and keeps its
 own look, as does a file gone from a library you built by hand (*File no longer on disk*). A copy saved on your
-device keeps the row a chapter you can open. Anyone allowed to download may press ☁: Uchiyomi restores only the exact
-source copy recorded on that deleted row, if the series still follows that source and it is safe and available. It
-never guesses another copy or fallback, and a manual-library file or a file holding a chapter range is left for an
-admin to restore by hand.
+device keeps the row a chapter you can open. Anyone allowed to download may press ☁ to bring it back onto its own row,
+with everyone's place in it: it fetches the copy a **Fetch** of that chapter would take now, from the sources the
+series follows — so a chapter deleted before the series moved to another source comes back from the new one. Only
+when none of them lists the chapter is the copy it was first downloaded from asked again, while that source is still
+installed, switched on and not cooling down. Tapping the row opens its versions, where **Fetch** beside a copy takes
+exactly that copy. To bring back many, select them and press **Fetch**: the ones the sources list come back as one
+download (since [#437](https://github.com/AngeloSha/uchiyomi/issues/437) that is all it takes after a series moved
+source — no need to remove the series and add it again). When a chapter cannot come back, the message says why and
+what to do: a file from a library you built by hand, or one holding a range of chapters, cannot be put back in place,
+but a copy picked under its versions can still be fetched.
 
 Since v0.43.0 the missing chapters can be marked read on the series page (section 4, *Marking chapters you
 don't have as read*), and with this switch on the marks reach Mihon:
@@ -3316,6 +3330,17 @@ use **Move to library**. A series filed by hand stays put: rescans, newly create
 existing one's folders all leave it alone. Set it back to **Automatic** to hand it to the folder rule again;
 removing the library you filed it into does that too (since v0.55.1).
 
+The picker marks the current library; mixed selections have no current badge. Moving between shared libraries
+keeps files in place. Selecting **your private library**, or moving your private copy to a shared library,
+asks for confirmation before changing who can read it. These visibility changes move the series folder across
+all of its storage roots and preserve series, chapter and progress IDs. A failure restores the original folders
+and catalogue; a conflicting destination or busy reader is refused. Another account's private copies are never
+available, including to admins. Linked editions must be unlinked before changing visibility.
+
+**Automatic** preserves visibility and follows the folder rule; it never publishes a private copy. The bulk
+result reports any skipped series. Earlier private reading history stays private after publication, and existing
+private AniList entries are not made public automatically.
+
 Nothing changes until you declare something. A fresh install and an upgraded one both start with a single
 library covering the whole root, no reading progress moves, no files are touched, and removing a library
 returns its series to whichever library still covers their folder.
@@ -3388,10 +3413,11 @@ ways:
 
 ![Import and review matches](shots/admin-import.webp)
 
-- **Mihon / Tachiyomi backup** — pick your `.tachibk` (or `.proto.gz`) file. Only each entry's title, its
-  source and its address on that source are read: the source to look the title up on that same source here,
+- **Mihon / Tachiyomi backup** — pick your `.tachibk` (or `.proto.gz`) file; a Suwayomi backup is the same file.
+  Each entry's title, its source and its address on that source are read: the source to look the title up on that same source here,
   if you have it installed, and the address as the proof that a result there is that exact entry rather than
-  a namesake. The file never leaves your server, and no Mihon account is used.
+  a namesake. So are its tracker links, and which of its chapters are marked read (see *Mark chapters I've read*,
+  below). The file never leaves your server, and no Mihon account is used.
 - **MangaDex list** — paste the link to a **public** custom list. Private follows would need a MangaDex
   login, which Uchiyomi never asks for; make a list public and share that instead.
 - **Paste titles** — one per line, from anywhere.
@@ -3412,6 +3438,17 @@ ways:
   connection is read, never another admin's. A token the service rejects switches that connection off and
   says so, exactly as a failed push does; a token that has merely lapsed is reported before the service is
   asked and the connection is left in place. Either way, reconnect under Profile and load again.
+
+**Mark chapters I've read**, beside the library choice above the intake and on by default, brings your reading over
+with the titles (since v0.108.0, #433): the chapters a backup has marked read, and every chapter up to how far your
+tracker says you are, are marked read here for your account alone — on the titles you already have as soon as the
+list is read, on the others when **Import selected** adds them. A chapter this server does not have yet is ticked on
+its listing and becomes read when it lands. Nothing is marked unread, a chapter you already finished here keeps its
+date, nothing is sent to your trackers, and streaks and reading stats do not count it, since you did not read it here.
+Nor does the read-chapter cleanup take an imported read as a reason to delete a downloaded file. A series numbered by
+posting order or by its chapter titles is left alone, since its numbers are not the other app's, and a file holding
+several chapters is marked only once your tracker reaches the last of them. Each backup row says how far it was read
+(*Read to ch. 57*), and the import says what it marked (*Marked 57 chapters read in 2 series.*).
 
 **Start matching** looks every title up against your sources in the background — a backup entry is matched
 on the source it came from first, when you have that source installed, and only a result whose catalogue
@@ -3786,11 +3823,21 @@ locations remain opaque, and only explicit whole-file completion completes an EP
 
 Two separate switches start off:
 
-- **Count completed chapters from other apps** includes small, newly reported explicit completions from KOReader and the Komga API
-  in your personal chapter totals. Initial linking, bulk reports and retries do not count as new reading. These
-  counts add no minutes, sessions, streaks, badges or household leaderboard activity.
-- **Remember estimated OPDS positions** uses page-streaming requests as a rough resume hint. Prefetching can move this
-  hint: a page request does not prove that you read it and never creates a completion or a tracker update.
+- **Count completed chapters from other apps** includes small, newly reported explicit completions from KOReader and the Komga API,
+  and chapters read over OPDS page streaming (the next switch), in your personal chapter totals. Initial linking, bulk
+  reports and retries do not count as new reading. These counts add no minutes, sessions, streaks, badges or household
+  leaderboard activity.
+- **Track reading from OPDS page streaming** (named *Remember estimated OPDS positions* in v0.107.0; since v0.108.0,
+  [#377](https://github.com/AngeloSha/uchiyomi/issues/377), it also counts chapters read) is for readers that read a
+  chapter page by page over OPDS rather than downloading it: Panels, Chunky, KOReader's OPDS browser. Uchiyomi
+  remembers the page you reach, and the OPDS feed offers it as where you stopped wherever you have no other place in
+  that chapter. A chapter you page through to the end counts as read, here and on your trackers, when its last page
+  comes in a sitting (pages with no break of six hours) that reached at least half the chapter's pages going forward
+  and began at least 20 seconds before, or half a second a page before in a long chapter. So a reader that loads the
+  whole chapter at once, a jump to the last page, or a strip of thumbnails (pages asked for narrower than 600 pixels)
+  does not count, and a reader that loads a few pages ahead may count a chapter a few pages early. The pages before the
+  end only move your place, never back. Reading a finished chapter again changes nothing, and a chapter counted this
+  way keeps its file from *Delete read chapters* (section 8) until you read it here or in KOReader, or mark it read.
 
 Incognito keeps only your private position and suppresses reading events and tracker updates across readers.
 These server features require the built-in library backend.

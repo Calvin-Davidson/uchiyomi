@@ -19,8 +19,10 @@ import { EncryptedMediaKey } from '@/components/EncryptedMedia';
 import { encryptedSeriesId } from '@/lib/encryptedMedia';
 import { SeriesCard } from '@/components/cards';
 import { useToast } from '@/components/Toast';
-import { ConfirmDialog, Modal, msgOf } from '@/components/ConfirmDialog';
+import { ConfirmDialog, Modal, actionFailure, listActionFailure, msgOf } from '@/components/ConfirmDialog';
 import { MoveToLibrary } from '@/components/MoveToLibrary';
+import { moveSeriesToLibrary } from '@/lib/moveLibrary';
+import { requestFailure } from '@/lib/refusals';
 import { SeriesPrivacyControls } from '@/components/SeriesPrivacyControls';
 import { useAuth, canDownload } from '@/lib/auth';
 import { IcChevronLeft, IcDownload, IcCloudDownload, IcCheck, IcTrash, IcHourglass, IcGrid, IcRows, IcComment } from '@/components/icons';
@@ -35,7 +37,7 @@ import { reasonText, type Said } from '@/lib/said';
 import { offlineOutcome } from '@/lib/notices';
 import { FindMissingDialog } from '@/components/FindMissingDialog';
 import { normGroup } from '@/lib/scanlators';
-import { GHOST_CAP, mergeRows, whyLabel, runLabel, chunkNumbers, countsAsBehind, MARK_CHUNK, heldBy, lastOf, wholesHeld, prunedWords, deliberatelyDeleted, ghostOfDeleted, withoutBlockedDeleted, type Row } from '@/lib/chapterRows';
+import { GHOST_CAP, mergeRows, whyLabel, runLabel, chunkNumbers, countsAsBehind, MARK_CHUNK, heldBy, lastOf, wholesHeld, prunedWords, deliberatelyDeleted, ghostOfDeleted, withoutBlockedDeleted, fetchPlan, type Row } from '@/lib/chapterRows';
 import { chParam, landingNumber } from '@/lib/healthLinks';
 import { effectsReduced } from '@/lib/effects';
 import { clampPage, numberingSpan, pageCount, pageLabel, pageOf, pageSizeFor, pageSlice } from '@/lib/chapterPages';
@@ -80,6 +82,7 @@ import { catchUpText } from '@/lib/readingTime';
 import { offlineKeyShown, seriesActionGroups, type SeriesActionId } from '@/lib/seriesActions';
 import { RatingsPanel, useSeriesRating } from '@/components/RatingsPanel';
 import { ContinueBar, ContinueButton, ReadProgress, useOutOfView } from '@/components/ContinueBar';
+import { useNativeSidebar } from '@/lib/nativeLayout';
 import { FavouriteKey, IcListAdd, MoreKey, SeriesKey, SeriesMoreSheet, moreMenuItems } from '@/components/SeriesKeys';
 import { ProgressRing } from '@/components/ProgressRing';
 import { SeriesEditor, copyPath, type EditTab } from '@/components/SeriesEditor';
@@ -120,7 +123,7 @@ function CollectionSheet({ seriesId, onClose }: { seriesId: string; onClose: () 
     if (inFlight.current || typeof c.contains !== 'boolean') return;
     inFlight.current = true; setSaving(true);
     try { await saveMembership(c, !c.contains); }
-    catch { toast(tr('Failed'), 'error'); }
+    catch (error) { toast(listActionFailure(error, tr('Could not change this series’s list membership.')), 'error'); }
     finally { inFlight.current = false; setSaving(false); }
   };
   const createAndAdd = async () => {
@@ -132,7 +135,7 @@ function CollectionSheet({ seriesId, onClose }: { seriesId: string; onClose: () 
       qc.setQueryData<{ content: CollectionRow[] }>(queryKey, (old) => ({ content: [...(old?.content ?? []), { ...c, contains: false }] }));
       setName('');
       // If adding fails, keep the newly created empty list visible and retryable.
-      try { await saveMembership(c, true); } catch { toast(tr('Failed'), 'error'); }
+      try { await saveMembership(c, true); } catch (error) { toast(listActionFailure(error, tr('The list was created, but this series could not be added.')), 'error'); }
     } catch { toast(tr('Could not create the list'), 'error'); }
     finally { inFlight.current = false; setSaving(false); }
   };
@@ -1188,10 +1191,10 @@ function SeriesInner() {
       else await api(`/api/favorites/${id}`, { method: 'DELETE' });
       qc.invalidateQueries({ queryKey: ['home'] });
       qc.invalidateQueries({ queryKey: ['library'] });
-    } catch {
+    } catch (error) {
       // Put back, and say so: the heart that stayed lit over a refusal was the one feedback, and it lied.
       setFav(!next);
-      toast(tr('Could not do that'), 'error');
+      toast(requestFailure(error) ?? (next ? tr('Could not add this series to favourites.') : tr('Could not remove this series from favourites.')), 'error');
     }
   };
 
@@ -1296,9 +1299,10 @@ function SeriesInner() {
   // with it -- unread means those too -- and tells no tracker: a tracker left ahead is the safe direction.
   const markAllUnread = async () => {
     try {
-      await api('/api/library/bulk/read', { json: { seriesIds: [id], completed: false } });
-      toast(tr('Marked unread'), 'success');
-    } catch { toast(tr('Could not do that'), 'error'); }
+      const { applied } = await api<{ applied: number }>('/api/library/bulk/read', { json: { seriesIds: [id], completed: false } });
+      if (applied) toast(tr('Marked unread'), 'success');
+      else toast(tr('That series is no longer in the library'), 'error');
+    } catch (error) { toast(requestFailure(error) ?? tr('Could not mark this series as unread.'), 'error'); }
     for (const k of [['series-books', id], ['series-listing', id], ['series', id], ['home'], ['library'], ['collection']]) qc.invalidateQueries({ queryKey: k });
   };
 
@@ -1430,17 +1434,19 @@ function SeriesInner() {
       invalidateChapters();
       leaveSelect();
     } catch (e) {
-      toast(msgOf(e, tr('Could not start.')), 'error');
+      toast(actionFailure(e, tr('Could not start fetching chapters.')), 'error');
     }
     setActing(false);
     setConfirming(null);
   };
+  // The grey rows, and the deleted chapters the listing has a copy of, as one Fetch of numbers; each other deleted chapter
+  // restored by its own row (fetchPlan, #437). `versionsOf` is the listing's copies, the tombstones' numbers included:
+  // the listing route leaves those out of `ghosts`, since a tombstone holds its number.
   const bulkFetch = async () => {
-    const listed = fetchable.filter((g) => !g.bookId).map((g) => g.number);
-    const deleted = fetchable.flatMap((g) => g.bookId ? [g.bookId] : []);
+    const plan = fetchPlan(fetchable, versionsOf, allBooks);
     const requests: Array<{ path: string; body: Record<string, unknown> }> = [
-      ...chunkNumbers(listed).map((numbers) => ({ path: '/api/sources/fetch', body: { seriesId: id, numbers } })),
-      ...deleted.map((bookId) => ({ path: `/api/books/${bookId}/refetch`, body: {} })),
+      ...chunkNumbers(plan.numbers).map((numbers) => ({ path: '/api/sources/fetch', body: { seriesId: id, numbers } })),
+      ...plan.bookIds.map((bookId) => ({ path: `/api/books/${bookId}/refetch`, body: {} })),
     ];
     if (!requests.length) return;
     setActing(true);
@@ -1456,10 +1462,12 @@ function SeriesInner() {
         }
         if (i < requests.length - 1) {
           const ended = await awaitJob(res.folder);
-          if (ended?.status === 'error') throw new Error(reasonText(ended) || tr('Fetch stopped. Try another source or wait.'));
+          // Said here, as postInChunks says it: thrown, it reached msgOf, which reads only a refused request's body, and
+          // a job that stopped for a reason read "Could not start." (#437).
+          if (ended?.status === 'error') { toast(reasonText(ended) || tr('Fetch stopped. Try another source or wait.'), 'error'); break; }
         }
       }
-    } catch (e) { toast(msgOf(e, tr('Could not start.')), 'error'); }
+    } catch (e) { toast(actionFailure(e, tr('Could not start fetching chapters.')), 'error'); }
     setActing(false);
   };
   // The fetch icon on one ghost row: the bar's Fetch for a list of one, same request, same toast, same
@@ -1509,7 +1517,7 @@ function SeriesInner() {
         if (ended?.status === 'error') { toast(reasonText(ended) || tr('Fetch stopped. Try another source or wait.'), 'error'); break; }
       }
     } catch (e) {
-      toast(msgOf(e, tr('Could not start.')), 'error');
+      toast(actionFailure(e, tr('Could not start fetching chapters.')), 'error');
     }
     setActing(false);
   };
@@ -1811,7 +1819,12 @@ function SeriesInner() {
   // A phone's title, on the cover (UI refresh, phone): once it has scrolled under the bar, the bar turns glass and says it.
   const heroTitleRef = useRef<HTMLHeadingElement>(null);
   const titleOut = useOutOfView(heroTitleRef, '-72px 0px 0px 0px');
-  const ctaOut = useOutOfView(ctaRef, '-64px 0px -160px 0px');
+  // The bottom 160 px are the phone's nav and this bar: a button there is hidden. The iOS side layout (the Duo) has no
+  // bottom nav, so there the button is out of view only once it scrolls off the top; with the phone's band the bar came
+  // up on load half over the button it copies. Reintroduce the one band: "the Duo's series page shows one reading
+  // button" in nativeLayout.test.ts.
+  const nativeSide = useNativeSidebar();
+  const ctaOut = useOutOfView(ctaRef, nativeSide ? '-64px 0px 0px 0px' : '-64px 0px -160px 0px');
   const barShown = !wide && ctaOut && !selecting && !!series;
 
   const Actions = (
@@ -2047,7 +2060,7 @@ function SeriesInner() {
   // it reads "Remove 3 chapters" now, and with nothing ticked says how to use it and where the series' own Remove is.
   // UI refresh: keys, as the Library's select bar has been since v0.60.0 -- they act on the picked chapters.
   const Toolbar = selecting && (
-    <div ref={toolbarRef} className="fixed inset-x-0 bottom-[calc(5.75rem+env(safe-area-inset-bottom))] z-40 border-t border-ink-700 bg-ink-950/95 px-4 pb-3 pt-3 backdrop-blur-xl lg:bottom-0 lg:start-[var(--rail-w)] lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+    <div ref={toolbarRef} className="fixed inset-x-0 bottom-[calc(5.75rem+env(safe-area-inset-bottom))] z-40 border-t border-ink-700 bg-ink-950/95 px-4 pb-3 pt-3 backdrop-blur-xl lg:bottom-0 lg:start-[var(--rail-w)] lg:pb-[max(0.75rem,env(safe-area-inset-bottom))]" data-selection-toolbar>
       <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
         <span className="me-auto text-sm font-medium text-fog-100">{acting ? '…' : selectedText(pickedCount)}</span>
         <button disabled={acting || filteredBooks.length + filteredGhosts.length === 0} onClick={selectAllChapters}
@@ -2130,7 +2143,7 @@ function SeriesInner() {
         <div className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(85% 95% at 22% 0%, rgb(var(--cover, 124 92 255) / 0.32), transparent 62%)' }} />
         {/* a phone's title, on the cover's foot (UI refresh, phone) */}
         <motion.div initial={reduced ? false : { opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.08, ease: [0.22, 0.61, 0.36, 1] }}
-          className="absolute inset-x-0 bottom-0 px-4 pb-3 lg:hidden">
+          data-series-phone-title className="absolute inset-x-0 bottom-0 px-4 pb-3 lg:hidden">
           {meta?.status && (
             <span className="mb-2 inline-block rounded-md bg-white/15 px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide text-white backdrop-blur rtl:tracking-normal">{statusText(meta.status)}</span>
           )}
@@ -2229,9 +2242,12 @@ function SeriesInner() {
           onFetch={(copy) => {
             const { number: n, ghost } = chapterSheet;
             setChapterSheet(null);
-            // A deliberate tombstone may only use the canonical owned copy stored on the book. Ignore
-            // alternate copies shown by the versions sheet; the member restore endpoint enforces it too.
-            void (ghost?.bookId ? fetchDeleted(ghost.bookId) : copy ? pickGhost(n, copy) : fetchOne(n));
+            // The copy the person picked is the one fetched, on a deleted chapter too (#437): the server takes a pick of a
+            // tombstone's number as it takes any pick, and lands it on the deleted row. It used to restore the tombstone's
+            // own copy whatever was picked -- the copy from the source the series had moved away from. With no copy to
+            // name (nothing lists the number, or a listing from before v0.33.0), a deleted chapter is restored by its row --
+            // the copy stamped on it, when no followed source has one -- and a grey row is fetched by number.
+            void (copy ? pickGhost(n, copy) : ghost?.bookId ? fetchDeleted(ghost.bookId) : fetchOne(n));
           }}
           // ⚠️ The sheet closes FIRST, then the confirm opens: a Modal under a Sheet cannot be tapped.
           onReplace={(copy) => { const b = chapterSheet.book!; setChapterSheet(null); setReplacing({ book: b, copy }); }}
@@ -2267,15 +2283,13 @@ function SeriesInner() {
         />
       )}
       {moving && (
-        <MoveToLibrary n={1} busy={moveBusy} onClose={() => setMoving(false)} onPick={async (libraryId) => {
+        <MoveToLibrary n={1} busy={moveBusy} current={series ? { libraryId: series.libraryId } : undefined} onClose={() => setMoving(false)} onPick={async (libraryId, options) => {
           setMoveBusy(true);
           try {
-            await api(`/api/admin/series/${encodeURIComponent(id)}/library`, { json: { libraryId } });
-            toast(tr('1 series updated'), 'success');
-            for (const k of [['series', id], ['series-books', id], ['library'], ['home'], ['collection']]) qc.invalidateQueries({ queryKey: k });
-          } catch (e) { toast(msgOf(e, tr('Could not do that')), 'error'); }
-          setMoveBusy(false);
-          setMoving(false);
+            const result = await moveSeriesToLibrary([id], libraryId, options);
+            for (const k of [['series', id], ['series-books', id], ['series-privacy'], ['library'], ['home'], ['collection'], ['content-privacy']]) qc.invalidateQueries({ queryKey: k });
+            return result;
+          } finally { setMoveBusy(false); }
         }} />
       )}
       {renaming && series?.folder && (
