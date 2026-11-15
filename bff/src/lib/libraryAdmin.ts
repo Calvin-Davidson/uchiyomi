@@ -1,5 +1,4 @@
 import { sameContentScope, privateFolderOwner, reservedPrivateFolder } from './contentScope';
-import { encryptedSeriesId } from './encryptedMedia';
 import { lockLibrarySaves } from './libraryFolders';
 import { visibleToAll } from './visibility';
 // Destructive library operations: hide a series, restore it, and merge one into another.
@@ -52,11 +51,12 @@ export interface SeriesRow {
   merged_into: string | null;
   library_id: string;
   is_private: boolean;
+  encrypted: boolean;
   owner_user_id: string | null;
 }
 
 export const getSeriesRow = (id: string) =>
-  one<SeriesRow>(`SELECT id, title, folder, deleted_at, merged_into, library_id, is_private, owner_user_id FROM lib_series WHERE id = $1`, [id]);
+  one<SeriesRow>(`SELECT id, title, folder, deleted_at, merged_into, library_id, is_private, owner_user_id, encrypted FROM lib_series WHERE id = $1`, [id]);
 
 /** Remove per-series artwork, including versioned title logos and the first page the cleanup kept. */
 async function dropArt(id: string): Promise<void> {
@@ -109,7 +109,7 @@ export async function mergeRefusal(fromId: string, intoId: string): Promise<Merg
   const from = await getSeriesRow(fromId);
   const into = await getSeriesRow(intoId);
   if (!from || !into) return { refused: 'not_found' };
-  if (encryptedSeriesId(fromId) || encryptedSeriesId(intoId)) return { refused: 'encrypted_media' };
+  if (from.encrypted || into.encrypted) return { refused: 'encrypted_media' };
   if (!sameContentScope(from,into)) return {refused:'different_scope'};
   for (const [row, which] of [[from, 'source'], [into, 'target']] as const) {
     if (row.deleted_at) return { refused: 'deleted', which };
@@ -219,13 +219,13 @@ export async function mergeSeries(
     // edition checks happen again *under* the locks: two BFF processes can both pass mergeRefusal(), but only the first
     // may move rows. The second observes the first one's merged_into (or a concurrent hide) and refuses.
     const locked = await qq<SeriesRow & { work_id: string | null; source_id: string | null; source_series_id: string | null; numbering: string | null }>(
-      `SELECT id, title, folder, deleted_at, merged_into, work_id, source_id, source_series_id, numbering,library_id,is_private,owner_user_id
+      `SELECT id, title, folder, deleted_at, merged_into, work_id, source_id, source_series_id, numbering,library_id,is_private,owner_user_id,encrypted
          FROM lib_series WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE`, [[fromId, intoId]],
     );
     const from = locked.find((r) => r.id === fromId);
     const into = locked.find((r) => r.id === intoId);
     if (!from || !into) throw new MergeConflictError({ refused: 'not_found' });
-    if (encryptedSeriesId(fromId) || encryptedSeriesId(intoId)) throw new MergeConflictError({ refused: 'encrypted_media' });
+    if (from.encrypted || into.encrypted) throw new MergeConflictError({ refused: 'encrypted_media' });
     if (!sameContentScope(from,into)) throw new MergeConflictError({refused:'different_scope'});
     if (from.deleted_at) throw new MergeConflictError({ refused: 'deleted', which: 'source' });
     if (into.deleted_at) throw new MergeConflictError({ refused: 'deleted', which: 'target' });

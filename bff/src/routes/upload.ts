@@ -18,7 +18,6 @@ import { visible, Params, viewCtxFor } from '../lib/visibility';
 import { actsAsAdmin, authenticate, userIdOf, roleOf } from '../lib/auth';
 import { logAudit } from '../lib/audit';
 import { DL_ROOT, persistScan, cbzPages, cbzEntry, libraryRows, libraryIdFor } from '../lib/library';
-import { encryptedSeriesId } from '../lib/encryptedMedia';
 import sharp from 'sharp';
 import { MIN_FREE_GB, freeBytes, sanitize } from '../lib/downloader';
 import { realContainedPath } from '../lib/fsGuard';
@@ -28,7 +27,7 @@ import { runsInside } from '../lib/updater';
 import { scheduleHealthSummaryRefresh } from '../lib/healthSummary';
 import multipart from '@fastify/multipart';
 import { writeImageChapter, ImageChapterError } from '../lib/imageChapter';
-import { resolveAddScope, scopeForSeries, scopeSql, ContentScopeError, defaultPrivateFor, folderForScope } from '../lib/contentScope';
+import { resolveAddScope, scopeForSeries, scopeSql, ContentScopeError, defaultPrivateFor, folderForScope, privateFolderOwner } from '../lib/contentScope';
 
 /** The largest file an upload takes, in MB (UPLOAD_MAX_MB). A whole volume as one CBZ fits well inside the default. */
 const configuredMax = Number(process.env.UPLOAD_MAX_MB);
@@ -133,12 +132,10 @@ async function receive(req: FastifyRequest, folder: string, name: string, images
     if (!(await looksLike(tmp, extOf(name)))) throw Object.assign(new Error('bad_file'), { badFile: true });
     const pages = await cbzPages(tmp, name).catch(() => []);
     if (!pages.length || pages.length > 50000) throw Object.assign(new Error('bad_file'), { badFile: true });
-    if (!encrypted) {
-      try {
-        const page = await cbzEntry(tmp, pages[0], name);
-        await sharp(page, { limitInputPixels: 64 * 1024 * 1024 }).resize({ width: 1, height: 1, fit: 'inside' }).toBuffer();
-      } catch { throw Object.assign(new Error('bad_file'), { badFile: true }); }
-    }
+    try {
+      const page = await cbzEntry(tmp, pages[0], name);
+      if (!encrypted) await sharp(page, { limitInputPixels: 64 * 1024 * 1024 }).resize({ width: 1, height: 1, fit: 'inside' }).toBuffer();
+    } catch { throw Object.assign(new Error('bad_file'), { badFile: true }); }
     if (await realContainedPath(DL_ROOT, rel) !== abs) throw Object.assign(new Error('bad_file'), { badFile: true });
     // link is atomic and fails with EEXIST. A stat followed by rename can overwrite another writer on POSIX.
     try { await fs.link(tmp, abs); }
@@ -204,8 +201,8 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
     const ctx = await viewCtxFor(userIdOf(req), roleOf(req));
     const params = new Params(); const shown = visible('s', ctx, params);
     const idParam = p.data.seriesId ? params.add(p.data.seriesId) : null;
-    const known = idParam ? await one<{ id: string; folder: string }>(
-      `SELECT s.id, s.folder FROM lib_series s WHERE s.id = ${idParam} AND ${shown}`, params.values as any[]) : null;
+    const known = idParam ? await one<{ id: string; folder: string; encrypted: boolean }>(
+      `SELECT s.id, s.folder, s.encrypted FROM lib_series s WHERE s.id = ${idParam} AND ${shown}`, params.values as any[]) : null;
     if (p.data.seriesId && !known) return reply.code(404).send({ error: 'not_found' });
     const originalFolder = posix.join(UPLOAD_FOLDER, sanitize(p.data.title ?? ''));
     let scope;
@@ -221,8 +218,10 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
     }
     if (!scope) return reply.code(404).send({ error: 'not_found' });
     const encrypted = p.data.encrypted === '1';
-    if ((encrypted && (!images || scope.visibility !== 'private')) ||
-        (known && encrypted !== encryptedSeriesId(known.id))) {
+    const uid = userIdOf(req);
+    if ((encrypted && (!images || scope.visibility !== 'private' || scope.ownerUserId !== uid ||
+          scope.libraryId !== `private_${uid}` || (known && privateFolderOwner(known.folder) !== uid))) ||
+        (known && encrypted !== known.encrypted)) {
       return reply.code(409).send({ error: 'encryption_scope' });
     }
     let folder = known?.folder ?? await folderForScope(scope, originalFolder);
@@ -286,9 +285,9 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
         // may be absent or change while a large request streams; the scanner must keep this chosen scope.
         const pinned = libraryIdFor(folder, await libraryRows()) !== scope.libraryId;
         const allocated = await one<{ id: string }>(`INSERT INTO lib_series
-          (id, source, title, folder, books_count, library_id, owner_user_id, is_private, library_pinned)
-          VALUES ($1,$2,$3,$4,0,$5,$6,$7,$8) RETURNING id`,
-        [newSeriesId(encrypted), UPLOAD_FOLDER, p.data.title, folder, scope.libraryId, scope.ownerUserId, scope.visibility === 'private', pinned]);
+          (id, source, title, folder, books_count, library_id, owner_user_id, is_private, library_pinned, encrypted)
+          VALUES ($1,$2,$3,$4,0,$5,$6,$7,$8,$9) RETURNING id`,
+        [newSeriesId(), UPLOAD_FOLDER, p.data.title, folder, scope.libraryId, scope.ownerUserId, scope.visibility === 'private', pinned, encrypted]);
         reservedSeries = allocated!.id;
       }
       const r = await receive(req, folder, name, images, encrypted);

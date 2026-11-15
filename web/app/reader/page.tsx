@@ -37,7 +37,7 @@ import { translatedSrc, translating, type TranslateStatus } from '@/lib/readerTr
 import { ReaderSettings } from '@/components/ReaderSettings';
 import { SectionTitle, useImgRetry, useRtl } from '@/components/ui';
 import { EncryptedMediaKey, useMediaKey } from '@/components/EncryptedMedia';
-import { encryptedBookId, setMediaKey } from '@/lib/encryptedMedia';
+import { setMediaKey } from '@/lib/encryptedMedia';
 import { PageGrid } from '@/components/PageGrid';
 import { PageCleanupPanel } from '@/components/PageCleanupPanel';
 import { ChapterSheet } from '@/components/ChapterSheet';
@@ -62,7 +62,7 @@ interface PageDim { number: number; width: number | null; height: number | null;
  * found (`done`, the joins on its pages), still being measured (`pending`, asked again shortly), or `none` to find; unset
  * when it was not asked -- joining off, or a downloaded copy, which carries what was found when it was saved.
  */
-interface Chapter { id: string; seriesId: string; seriesTitle: string; title: string; pages: PageDim[]; offline: boolean; readingDirection?: string | null; pruned?: boolean; sourceId?: string | null; spreads?: 'done' | 'pending' | 'none' }
+interface Chapter { id: string; seriesId: string; seriesTitle: string; title: string; pages: PageDim[]; offline: boolean; readingDirection?: string | null; pruned?: boolean; encrypted?: boolean; sourceId?: string | null; spreads?: 'done' | 'pending' | 'none' }
 interface ChapterRef { id: string; label: string }
 interface FlatItem { ci: number; number: number; width: number | null; height: number | null; key: string; firstOfChapter: boolean; junk?: boolean; join?: 'rtl' | 'ltr'; mark?: SpreadMark; forced?: boolean; missing?: boolean; contentVersion?: string; collapsed?: boolean }
 
@@ -159,6 +159,7 @@ async function loadChapter(bookId: string, spreads = false,actor=getCurrentUser(
       // The server deleted this chapter's file after everyone finished it. Carried so the empty page list
       // below can be explained rather than blamed on the reader's library mount.
       pruned: b.pruned === true,
+      encrypted: b.encrypted,
       sourceId: b.sourceId ?? null,
       spreads: list.spreads,
     };
@@ -1313,7 +1314,7 @@ function ReaderInner() {
     if (!it) return;
     const ch = chapters[it.ci];
     if (!ch) return;
-    if (encryptedBookId(ch.id) && !mediaKey) return;
+    if (ch.encrypted && !mediaKey) return;
     // crossed forward into a new chapter → the departed chapter is finished, even if its last page was skipped
     const prev = prevPos.current;
     prevPos.current = { ci: it.ci };
@@ -1375,7 +1376,7 @@ function ReaderInner() {
     staleTime: 5 * 60 * 1000,
   });
   const activeChapter = chapters[flat[current]?.ci ?? 0];
-  const encryptedChapter = !!activeChapter && encryptedBookId(activeChapter.id);
+  const encryptedChapter = activeChapter?.encrypted;
   const pageActionsOnline = showPages && serverReachableHint();
   // Paged mode has no strip between chapters: crossing into another one says so, briefly, so a chapter with no title page is still
   // plainly a new chapter. (The webtoon column has its own divider.) Not on the first chapter opened, and not while the chapter's

@@ -16,7 +16,7 @@ import { content as komga } from '../lib/backend';
 import { cacheBytes } from '../lib/imageCache';
 import { runtime } from '../lib/runtime';
 import { persistScan, libraryIdFor, libraryRows, LIBRARY_ROOT, DL_ROOT, setBookDates, setBookMeta } from '../lib/library';
-import { encryptedSeriesId } from '../lib/encryptedMedia';
+import { seriesEncrypted } from '../lib/encryptedMedia';
 import { applyMoves, heldElsewhere, lockLibrarySaves, previewMoves, setFolders, storedFolders, underSql, LIBRARY_MAX_FOLDERS } from '../lib/libraryFolders';
 import { containedPath, allWritable, realContainedPath } from '../lib/fsGuard';
 import { deleteSeries, restoreSeries, mergeSeries, mergeRefusal, MergeConflictError, getSeriesRow, deleteSeriesFiles, renameSeriesFolder, forgetSeries, diskSpelling, deleteChapterFiles } from '../lib/libraryAdmin';
@@ -3554,7 +3554,7 @@ export default async function adminRoutes(app: FastifyInstance) {
   // takes it back.
   app.put('/api/admin/series/:id/art', { bodyLimit: ART_BODY_LIMIT }, async (req, reply) => {
     const requestedId = (req.params as { id: string }).id;
-    if (encryptedSeriesId(requestedId)) return reply.code(409).send({ error: 'encrypted_media' });
+    if (await seriesEncrypted(requestedId)) return reply.code(409).send({ error: 'encrypted_media' });
     if ((req.body as { kind?: unknown } | null)?.kind === 'logo') return changeTitleArtRoute(req, reply);
     const b = z.object({
       kind: z.enum(['cover', 'banner']),

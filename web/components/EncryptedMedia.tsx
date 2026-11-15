@@ -2,13 +2,15 @@
 
 import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { getCurrentUser } from '@/lib/api';
-import { encryptedImagePath, fetchEncryptedImage, generateMediaRecoveryKey, getMediaKey, importMediaKey, setMediaKey, subscribeMediaKey } from '@/lib/encryptedMedia';
+import { fetchEncryptedImage, generateMediaRecoveryKey, getMediaKey, importMediaKey, setMediaKey, subscribeMediaKey } from '@/lib/encryptedMedia';
 import { t as tr } from '@/lib/i18n';
 
 export const useMediaKey = () => useSyncExternalStore(subscribeMediaKey, getMediaKey, () => null);
 
-export function useEncryptedImage(src: string) {
-  const encrypted = encryptedImagePath(src);
+// Native images handle ordinary covers/pages, including lazy loading. Only probe owned images
+// after a decode failure; the response MIME type identifies ciphertext before it is decrypted.
+export function useEncryptedImage(src: string, tryDecrypt: boolean) {
+  const encrypted = tryDecrypt && /^\/img\/(?:series\/s_|books\/b_)/.test(src);
   const key = useMediaKey();
   const [image, setImage] = useState<{ src: string; key: CryptoKey; url: string | null }>();
   useEffect(() => {
@@ -29,7 +31,7 @@ export function useEncryptedImage(src: string) {
     };
   }, [src, encrypted, key]);
   const match = image?.src === src && image?.key === key ? image : undefined;
-  return { src: encrypted ? match?.url ?? '' : src, locked: encrypted && !key, failed: encrypted && match?.url === null };
+  return { url: match?.url, pending: encrypted && !!key && match === undefined };
 }
 
 export function EncryptedMediaKey({ allowGenerate = false, disabled = false }: { allowGenerate?: boolean; disabled?: boolean }) {

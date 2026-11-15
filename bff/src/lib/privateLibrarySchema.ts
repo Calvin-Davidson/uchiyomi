@@ -5,6 +5,7 @@ ALTER TABLE libraries ADD COLUMN IF NOT EXISTS managed_private boolean NOT NULL 
 CREATE UNIQUE INDEX IF NOT EXISTS libraries_private_owner_idx ON libraries(owner_user_id) WHERE managed_private;
 ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS owner_user_id uuid REFERENCES users(id) ON DELETE RESTRICT;
 ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS is_private boolean NOT NULL DEFAULT false;
+ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS encrypted boolean NOT NULL DEFAULT false;
 ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS private_published_at timestamptz;
 CREATE INDEX IF NOT EXISTS lib_series_private_owner_idx ON lib_series(owner_user_id) WHERE is_private;
 ALTER TABLE reading_events ADD COLUMN IF NOT EXISTS is_private boolean NOT NULL DEFAULT false;
@@ -50,6 +51,13 @@ CREATE INDEX IF NOT EXISTS reading_events_private_user_idx ON reading_events(use
 DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='libraries_private_owner_check') THEN
   ALTER TABLE libraries ADD CONSTRAINT libraries_private_owner_check CHECK (managed_private = (owner_user_id IS NOT NULL));
+ END IF;
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='lib_series_encrypted_private_check') THEN
+  -- Backfill once for installs that used the old encrypted ID format.
+  UPDATE lib_series SET encrypted = true
+   WHERE id ~ '^s_e2ee_[0-9a-f]{20}$' AND is_private AND library_id = 'private_' || owner_user_id::text;
+  ALTER TABLE lib_series ADD CONSTRAINT lib_series_encrypted_private_check
+    CHECK (NOT encrypted OR (is_private AND owner_user_id IS NOT NULL AND library_id = 'private_' || owner_user_id::text));
  END IF;
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='lib_series_private_owner_check') THEN
   ALTER TABLE lib_series ADD CONSTRAINT lib_series_private_owner_check CHECK (NOT is_private OR owner_user_id IS NOT NULL);

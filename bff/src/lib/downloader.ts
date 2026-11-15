@@ -358,7 +358,7 @@ export async function downloadChapter(
   opts: { replace?: boolean; preflight?: DownloadPreflight } = {},
 ): Promise<{ file: string; pages: number } | null> {
   if (reservedPrivateFolder(input.seriesFolder) && await one(
-    "SELECT 1 FROM lib_series WHERE folder = $1 AND id ~ '^s_e2ee_' AND deleted_at IS NULL",
+    "SELECT 1 FROM lib_series WHERE folder = $1 AND encrypted",
     [input.seriesFolder],
   )) throw new Error('This series accepts only client-encrypted uploads.');
   const src = getSource(input.sourceId);

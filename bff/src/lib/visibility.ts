@@ -583,11 +583,11 @@ export async function viewCtxFor(
  * the two: "no such chapter" and "not yours" should look identical from outside. The page count and series come along
  * for OPDS page streaming, which records where a reader got to (routes/opds.ts).
  */
-export async function visibleBookFile(bookId: string, ctx: ViewCtx): Promise<{ file: string; root: string; pages: number; series_id: string } | null> {
+export async function visibleBookFile(bookId: string, ctx: ViewCtx): Promise<{ file: string; root: string; pages: number; series_id: string; encrypted: boolean } | null> {
   const p = new Params();
   const id = p.add(bookId);
-  return (await one<{ file: string; root: string; pages: number; series_id: string }>(
-    `SELECT b.file, b.root, b.pages, b.series_id FROM lib_books b
+  return (await one<{ file: string; root: string; pages: number; series_id: string; encrypted: boolean }>(
+    `SELECT b.file, b.root, b.pages, b.series_id, s.encrypted FROM lib_books b
        JOIN lib_series s ON s.id = b.series_id
       WHERE b.id = ${id} AND ${visible('s', ctx, p)}
         -- A notice chapter the admin hides (lib/noticeChapters.ts) has no pages to give, as booksSrc has no row.

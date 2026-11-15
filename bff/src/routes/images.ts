@@ -33,7 +33,7 @@ import { q, one } from '../lib/db';
 import { pageFileVersion, pageFileVersionOf } from '../lib/pageCleanupFiles';
 import { viewCtxFor, visibleBookFile, seriesVisible, sourceAllowedFor, SYSTEM_CTX, type ViewCtx } from '../lib/visibility';
 import { ART_DIR, artFile, firstPageBookOf, FIRST_PAGE } from '../lib/seriesArt';
-import { encryptedBookId, encryptedSeriesId, ENCRYPTED_MEDIA_TYPE, isEncryptedPage } from '../lib/encryptedMedia';
+import { seriesEncrypted, ENCRYPTED_MEDIA_TYPE, isEncryptedPage } from '../lib/encryptedMedia';
 import { readTitleLogo } from '../lib/titleArt';
 import { namesOf } from '../lib/altTitles';
 import { HERO_FRAMES, backdropLook, heroFit, type HeroAr } from '../lib/heroFrame';
@@ -312,9 +312,9 @@ export const sourceCoverInput = (u: string, source?: string): Promise<Buffer> =>
   fetchCoverImage(u, source, { callerSupplied: true });
 
 // ---- series backdrop recipes (module-level so the pre-warmer can build them without a request) ----
-const bookFileAbs = async (id: string, ctx: ViewCtx): Promise<string | null> => {
+const bookFileAbs = async (id: string, ctx: ViewCtx) => {
   const r = await visibleBookFile(id, ctx);
-  return r ? join(r.root || LIBRARY_ROOT, r.file) : null;
+  return r ? { abs: join(r.root || LIBRARY_ROOT, r.file), encrypted: r.encrypted } : null;
 };
 // Bytes of a series' first downloaded page — the universal fallback when a remote cover/backdrop URL can't be
 // fetched (hotlink-protected CDN, dead link, timeout, unparsed cover). Guarantees art for any downloaded series.
@@ -331,7 +331,7 @@ const firstPageInput = async (id: string, ctx: ViewCtx): Promise<Buffer> => {
     `SELECT s.id, ${firstPageBookOf('s')} AS cover_book_id FROM lib_series s WHERE s.id = $1`, [id]);
   const kept = s ? await readFile(artFile(s.id, 'page')).catch(() => null) : null;
   if (kept) return kept;
-  const abs = s?.cover_book_id ? await bookFileAbs(s.cover_book_id, ctx) : null;
+  const abs = s?.cover_book_id ? (await bookFileAbs(s.cover_book_id, ctx))?.abs : null;
   if (!abs) throw Object.assign(new Error('no cover'), { statusCode: 404 });
   // A cover chapter whose file is gone -- deleted or moved by hand, which is what Rescan everything finds (v0.55.4), or a
   // library folder not mounted right now -- is a 404, as a chapter's own thumbnail is (pageOrGone, below): the admin
@@ -697,7 +697,7 @@ export const serveLibSeriesThumb = async (req: FastifyRequest, reply: FastifyRep
   // bookFileAbs now carries for chapters. Without it a hidden series' cover still renders, which is
   // how a deleted series has always kept its thumbnail.
   if (!(await seriesVisible(id, vc(req)))) return reply.code(404).send({ error: 'not_found' });
-  if (encryptedSeriesId(id)) return sendEncryptedPage(reply, await firstPageInput(id, vc(req)));
+  if (await seriesEncrypted(id)) return sendEncryptedPage(reply, await firstPageInput(id, vc(req)));
   const w = thumbWidth(req);
   const wk = w === 400 ? '' : `:w${w}`; // 400 keeps the legacy cache key so existing entries stay warm
   // admin override wins (uploaded file or pasted URL); variant carries updated_at so edits bust the cache
@@ -844,9 +844,10 @@ export const serveLibBookThumb = async (req: FastifyRequest, reply: FastifyReply
   // the bytes by the cache. The series thumb and the page route already checked first; this one did not.
   // Reintroduce by moving the bookFileAbs call back inside the producer: "a capped member gets 404 on a
   // warmed book thumbnail" in komgaCompat.int.test.ts sees 200.
-  const abs = await bookFileAbs(id, vc(req));
-  if (!abs) return reply.code(404).send({ error: 'not_found' });
-  if (encryptedBookId(id)) return sendEncryptedPage(reply, (await pageOrGone(abs, 0))?.bytes);
+  const book = await bookFileAbs(id, vc(req));
+  if (!book) return reply.code(404).send({ error: 'not_found' });
+  const { abs, encrypted } = book;
+  if (encrypted) return sendEncryptedPage(reply, (await pageOrGone(abs, 0))?.bytes);
   return serveImage(req, reply, `lib-bthumb:${id}`, async () => {
     const first = await pageOrGone(abs, 0);
     if (!first) throw Object.assign(new Error('empty'), { statusCode: 404 });
@@ -865,8 +866,9 @@ export const serveLibBookThumb = async (req: FastifyRequest, reply: FastifyReply
  * translated page's, and must not keep the original once the translation is there.
  */
 export const serveLibBookPage = async (req: FastifyRequest, reply: FastifyReply, id: string, pageNo: number, w: number, fit = 0, tl: string | null = null) => {
-  const abs = await bookFileAbs(id, vc(req));
-  if (!abs) return reply.code(404).send({ error: 'no_book' });
+  const book = await bookFileAbs(id, vc(req));
+  if (!book) return reply.code(404).send({ error: 'no_book' });
+  const { abs, encrypted } = book;
   // The reader changes ?cv= after reversible page edits. The disk cache must identify the new bytes too,
   // otherwise a fresh browser URL would still be answered with the old cached page.
   const fileStat = await stat(abs).catch(() => null);
@@ -881,7 +883,7 @@ export const serveLibBookPage = async (req: FastifyRequest, reply: FastifyReply,
       throw Object.assign(new Error('The chapter changed while reading this page. Restart its download.'), { statusCode: 409 });
     return page;
   };
-  if (encryptedBookId(id)) return sendEncryptedPage(reply, (await currentPage())?.bytes);
+  if (encrypted) return sendEncryptedPage(reply, (await currentPage())?.bytes);
   if (tl && !w) {
     const engine = (await translateOn()) ? await engineKey() : null;
     const done = engine ? await doneTranslation(id, pageNo, tl, engine) : null;
@@ -1058,7 +1060,7 @@ export default async function imageRoutes(app: FastifyInstance) {
   // ?style=hero → the REAL art sharp, frame-aware (?ar=wide|tall). Recipe + warmer live at module level.
   app.get('/img/series/:id/backdrop', async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (encryptedSeriesId(id)) return reply.code(404).send({ error: 'not_found' });
+    if (await seriesEncrypted(id)) return reply.code(404).send({ error: 'not_found' });
     // The same check every sibling image route opens with, and the only one this family was missing. The ctx
     // passed to backdropRecipe below reaches only its FALLBACK path, so whenever series_art holds a banner --
     // the normal state, since AniList art is fetched lazily for everything -- the image was produced from that
@@ -1091,7 +1093,7 @@ export default async function imageRoutes(app: FastifyInstance) {
   // stored one, so an old URL still gets the current banner.
   app.get('/img/series/:id/hero', async (req, reply) => {
     const { id } = req.params as { id: string };
-    if (encryptedSeriesId(id)) return reply.code(404).send({ error: 'not_found' });
+    if (await seriesEncrypted(id)) return reply.code(404).send({ error: 'not_found' });
     if (!(await seriesVisible(id, vc(req)))) return reply.code(404).send({ error: 'not_found' });
     const hero = (await heroServable([id])).get(id);
     if (!hero) return reply.code(404).send({ error: 'not_found' });

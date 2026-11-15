@@ -31,7 +31,7 @@ function UploadSeriesPage() {
       </div>
       <div className="card p-4">
         {seriesId ? (series.isPending ? <p>{tr('Loading…')}</p> : series.isError ? <p role="alert">{tr('Could not load series')}</p>
-          : <UploadSeriesSection key={seriesId} seriesId={seriesId} seriesTitle={series.data?.metadata?.title || series.data?.name} />) : <UploadSeriesSection />}
+          : <UploadSeriesSection key={seriesId} seriesId={seriesId} seriesTitle={series.data?.metadata?.title || series.data?.name} seriesEncrypted={series.data?.encrypted} />) : <UploadSeriesSection />}
       </div>
     </div>
   );

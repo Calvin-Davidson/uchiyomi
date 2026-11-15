@@ -13,7 +13,6 @@ import { libraryChanged } from '../lib/discoverIdentity';
 import { deleteSeries, restoreSeries, deleteSeriesFiles, forgetSeries } from '../lib/libraryAdmin';
 import { DL_ROOT } from '../lib/library';
 import { claimPrivateContentChange } from '../lib/privateFence';
-import { encryptedSeriesId } from '../lib/encryptedMedia';
 
 /** Root onSend hook. Implicit caches must not retain a response containing private library data. */
 export async function privateResponseHeaders(req: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -112,9 +111,9 @@ export async function privateLibraryRoutes(app: FastifyInstance): Promise<void> 
     const { id } = req.params as { id: string };
     const uid = userIdOf(req);
     if (!(await seriesVisible(id, await viewCtxFor(uid, roleOf(req))))) return reply.code(404).send({ error: 'not_found' });
-    const row = await one<{ is_private: boolean; owner_user_id: string | null; work_id: string | null; folder: string }>('SELECT is_private,owner_user_id,work_id,folder FROM lib_series WHERE id=$1', [id]);
+    const row = await one<{ is_private: boolean; encrypted: boolean; owner_user_id: string | null; work_id: string | null; folder: string }>('SELECT is_private,encrypted,owner_user_id,work_id,folder FROM lib_series WHERE id=$1', [id]);
     return { isPrivate: row!.is_private, owner: row!.owner_user_id === uid,
-      canChange: !encryptedSeriesId(id) && privateBackendSupported() && row!.owner_user_id === uid && !row!.work_id && privateFolderOwner(row!.folder) === uid };
+      canChange: !row!.encrypted && privateBackendSupported() && row!.owner_user_id === uid && !row!.work_id && privateFolderOwner(row!.folder) === uid };
   });
   app.put('/api/series/:id/privacy', async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -125,15 +124,15 @@ export async function privateLibraryRoutes(app: FastifyInstance): Promise<void> 
     const currentScope=await scopeForSeries(ctx,id,{write:true});
     if (!currentScope) return reply.code(404).send({ error: 'not_found' });
     if(currentScope.ownerUserId!==uid)return reply.code(403).send({error:'forbidden'});
-    if (encryptedSeriesId(id) && !body.data.isPrivate) return reply.code(409).send({ error: 'encryption_scope' });
     const privacyLease=claimPrivateContentChange(id);
     if(!privacyLease)return reply.code(409).send({error:'busy'});
     let writerClaim:FolderWriterClaim|null=null;
     try {
       const destination = await resolveAddScope(ctx, { visibility: body.data.isPrivate ? 'private' : 'shared', libraryId: body.data.libraryId });
       const outcome = await tx(async qq => {
-        const [row] = await qq<{ owner_user_id: string | null; work_id: string | null; folder: string; source_id: string | null; source_series_id: string | null }>('SELECT owner_user_id,work_id,folder,source_id,source_series_id FROM lib_series WHERE id=$1 FOR UPDATE', [id]);
+        const [row] = await qq<{ owner_user_id: string | null; encrypted: boolean; work_id: string | null; folder: string; source_id: string | null; source_series_id: string | null }>('SELECT owner_user_id,encrypted,work_id,folder,source_id,source_series_id FROM lib_series WHERE id=$1 FOR UPDATE', [id]);
         if (!row || row.owner_user_id !== uid) return 'forbidden';
+        if (row.encrypted && !body.data.isPrivate) return 'encryption_scope';
         // Edition and merge propagation needs an explicit work-level operation; never split silently.
         if (row.work_id) return 'edition_privacy_conflict';
         if (privateFolderOwner(row.folder) !== uid) return 'privacy_copy_required';

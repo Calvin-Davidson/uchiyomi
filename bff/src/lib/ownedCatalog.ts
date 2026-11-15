@@ -2,7 +2,7 @@
 // the lib_* tables. enrichSeries/booksForUser in catalog.ts then add per-user state exactly as before.
 import { q, one } from './db';
 import { cbzPageDims, cbzPages, DL_ROOT, LIBRARY_ROOT, pagesInNameOrder, persistScan } from './library';
-import { encryptedBookId, ENCRYPTED_MEDIA_TYPE } from './encryptedMedia';
+import { ENCRYPTED_MEDIA_TYPE } from './encryptedMedia';
 import { ViewCtx, Params, visible, browsable, ADULT_RATING } from './visibility';
 import { cleanDescription } from './htmlText';
 import { effectiveLang } from './seriesLang';
@@ -28,7 +28,7 @@ function page<T>(content: T[], total: number, p: number, size: number): Page<T> 
 // ⚠️ Every name here must ALSO be produced by the inner SELECT of `seriesSrcWith` below, which enumerates
 // its columns explicitly. Adding one to only one of the two makes EVERY series read fail with "column does
 // not exist" -- the series page, the library grid, search, the home rails, OPDS, all of it.
-const SERIES_COLS = 'id, title, summary, status, genres, author, age_rating, reading_direction, books_count, cover_book_id, web, created_at, latest_mtime, auto_update, library_id, library_pinned, is_private, source_chapters, source_missing, source_checked_at, source_id, lang, work_id';
+const SERIES_COLS = 'id, title, summary, status, genres, author, age_rating, reading_direction, books_count, cover_book_id, web, created_at, latest_mtime, auto_update, library_id, library_pinned, is_private, encrypted, source_chapters, source_missing, source_checked_at, source_id, lang, work_id';
 
 /**
  * The one place a series is read from.
@@ -57,7 +57,7 @@ const seriesSrcWith = (gate: Gate, ctx: ViewCtx, p: Params, alias: string) => `(
          -- The stored count less the notice chapters this series hides (lib/noticeChapters.ts), so every badge,
          -- filter and sort over it, and the Komga-compatible series Mihon's tracker reads, counts what is listed.
          ${visibleBookCount('s')} AS books_count, s.cover_book_id, s.web, s.created_at, s.latest_mtime,
-         s.auto_update, s.library_id, s.library_pinned, s.is_private,
+         s.auto_update, s.library_id, s.library_pinned, s.is_private, s.encrypted,
          -- What the source last said, so "how far behind is this?" is a column rather than a network call.
          -- Kept in step with SERIES_COLS above; see the warning there.
          s.source_chapters, s.source_missing, s.source_checked_at,
@@ -91,7 +91,7 @@ const browseSrc = (ctx: ViewCtx, p: Params, alias = 'sv') => seriesSrcWith(brows
  */
 const booksSrc = (ctx: ViewCtx, p: Params, alias = 'bv') => `(
   SELECT b.id, b.series_id, b.source, b.file, b.root, b.pages, b.mtime, b.published_at, b.page_dims, b.page_dims_version,
-         b.updated_at, b.fingerprint, b.scanlator, b.source_id, b.pruned_at, b.pruned_reason, b.size, b.missing_pages, b.chapter_name,
+         b.updated_at, b.fingerprint, b.scanlator, b.source_id, b.pruned_at, b.pruned_reason, b.size, b.missing_pages, b.chapter_name, s.encrypted,
          COALESCE(ov.number, b.number) AS number,
          ${rangeEnd('b', 'ov')} AS number_end,
          COALESCE(ov.title,  b.title)  AS title,
@@ -126,6 +126,7 @@ function seriesDto(r: any) {
   const count: number = r.books_count ?? 0;
   return {
     id: r.id,
+    ...(r.encrypted && { encrypted: true }),
     libraryId: r.library_id ?? 'lib',
     isPrivate: r.is_private === true,
     // Whether an admin filed this series into that library by hand. Shown so the edit modal can say
@@ -195,6 +196,7 @@ function bookDto(r: any) {
       : null;
   return {
     id: r.id,
+    ...(r.encrypted && { encrypted: true }),
     seriesId: r.series_id,
     seriesTitle: r.series_title ?? '',
     name: r.title,
@@ -882,8 +884,8 @@ export const owned = {
     // Goes through booksSrc so page dimensions cannot enumerate a chapter of a hidden series.
     const p = new Params();
     const bsrc = booksSrc(ctx, p);
-    const r = await one<{ file: string; root: string; pruned_at: string | null; missing_pages: number[] | null; page_dims_version: string | null; page_dims: Array<{ name: string; width: number | null; height: number | null }> | null }>(
-      `SELECT file, root, pruned_at, missing_pages, page_dims, page_dims_version FROM ${bsrc} WHERE id = ${p.add(id)}`,
+    const r = await one<{ file: string; root: string; encrypted: boolean; pruned_at: string | null; missing_pages: number[] | null; page_dims_version: string | null; page_dims: Array<{ name: string; width: number | null; height: number | null }> | null }>(
+      `SELECT file, root, encrypted, pruned_at, missing_pages, page_dims, page_dims_version FROM ${bsrc} WHERE id = ${p.add(id)}`,
       p.values as any[],
     );
     if (!r) return [];
@@ -891,34 +893,29 @@ export const owned = {
     // so without this the reader would open a pruned chapter, lay out the right number of pages, and 404
     // every single one of them. No pages is the truth.
     if (r.pruned_at) return [];
-    if (encryptedBookId(id)) {
-      const file = path.join(r.root || LIBRARY_ROOT, r.file);
-      const contentVersion = await pageFileVersion(file).catch(() => undefined);
-      const names = await cbzPages(file).catch(() => []);
-      if (await pageFileVersion(file).catch(() => undefined) !== contentVersion) {
-        throw Object.assign(new Error('The chapter changed while its page list was being read. Reload it.'), { statusCode: 409 });
-      }
-      return names.map((fileName, i) => ({
-        number: i + 1, fileName, mediaType: ENCRYPTED_MEDIA_TYPE, width: null, height: null, sizeBytes: null, contentVersion,
-      }));
-    }
     // A page that is a placeholder in the file (lib/partial.ts) is marked here, inside bookPages rather than
     // on the route, so the offline manifest and the Komga-compatible API see it as well as the reader. It
     // stays a page -- it has a real image behind it and keeps its number -- the mark only says what the
     // image is. Same idiom as `junk` on the route.
     const missing = new Set(Array.isArray(r.missing_pages) ? r.missing_pages.map(Number) : []);
     const contentVersion = await pageFileVersion(path.join(r.root || LIBRARY_ROOT, r.file)).catch(() => undefined);
+    const stable = async <T>(listed: T[]): Promise<T[]> => {
+      const after = await pageFileVersion(path.join(r.root || LIBRARY_ROOT, r.file)).catch(() => undefined);
+      if (after !== contentVersion) throw Object.assign(new Error('The chapter changed while its page list was being read. Reload it.'), { statusCode: 409 });
+      return listed;
+    };
+    if (r.encrypted) {
+      const names = await cbzPages(path.join(r.root || LIBRARY_ROOT, r.file)).catch(() => []);
+      return stable(names.map((fileName, i) => ({
+        number: i + 1, fileName, mediaType: ENCRYPTED_MEDIA_TYPE, width: null, height: null, sizeBytes: null, contentVersion,
+      })));
+    }
     const cleanup = await pageCleanupMetadata({ bookId: id, file: path.join(r.root || LIBRARY_ROOT, r.file), store: path.join(env.CONFIG_DIR, 'page-trash') });
     const mark = <T extends { number: number }>(pg: T) => ({ ...pg,
       ...(missing.has(pg.number) ? { missing: true as const } : {}),
       ...(contentVersion ? { contentVersion } : {}),
       ...(cleanup.removed.has(pg.number) ? { removed: true as const, restorable: cleanup.restorable.has(pg.number), junk: true, width: 32, height: 48 } : {}),
     });
-    const stable = async <T>(listed: T[]): Promise<T[]> => {
-      const after = await pageFileVersion(path.join(r.root || LIBRARY_ROOT, r.file)).catch(() => undefined);
-      if (after !== contentVersion) throw Object.assign(new Error('The chapter changed while its page list was being read. Reload it.'), { statusCode: 409 });
-      return listed;
-    };
     if (Array.isArray(r.page_dims) && r.page_dims.length && (!cleanup.revision || !contentVersion || r.page_dims_version === contentVersion)) {
       // The cache keeps the order its pages were measured in. Read it in today's page order, so sizes measured before
       // pageCmp (#436) never show a folder-wrapped archive's pages in the old order, or out of step with the numbers

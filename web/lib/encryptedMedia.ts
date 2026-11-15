@@ -2,10 +2,6 @@ const magic = new TextEncoder().encode('YOMIE2E1');
 const mediaType = 'application/vnd.yomi.encrypted-page';
 const rasterTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif'];
 
-export const encryptedSeriesId = (id: string) => id.startsWith('s_e2ee_');
-export const encryptedBookId = (id: string) => id.startsWith('b_e2ee_');
-export const encryptedImagePath = (path: string) => /^\/img\/(?:series\/s_e2ee_|books\/b_e2ee_)/.test(path);
-
 let key: CryptoKey | null = null;
 const listeners = new Set<() => void>();
 export const getMediaKey = () => key;

@@ -216,13 +216,13 @@ export function useImgRetry(src: string, autoTries = 1) {
   // one showing its retry button.
   useEffect(() => { setAttempt(0); }, [src]);
   const shown = attempt === 0 ? src : `${src}${src.includes('?') ? '&' : '?'}r=${attempt}`;
-  const image = useEncryptedImage(shown);
-  const failed = attempt > autoTries || image.failed;
+  const exhausted = attempt > autoTries;
+  const image = useEncryptedImage(shown, exhausted);
   return {
-    src: failed ? '' : image.src,
-    failed,
+    src: exhausted ? image.url || '' : shown,
+    failed: exhausted && !image.url && !image.pending,
     onError: useCallback(() => setAttempt((a) => a + 1), []),
-    retry: useCallback(() => setAttempt(a => image.failed ? (a + 1) % (autoTries + 1) : 0), [autoTries, image.failed]),
+    retry: useCallback(() => setAttempt(0), []),
   };
 }
 
@@ -264,8 +264,8 @@ export function Img({
   // editor follow the art version. A store subscription in every Img of a Library grid was the price of re-drawing the
   // few cards on screen at the moment of a change.
   const shown = withCoverBust(fellBack && fallbackSrc ? fallbackSrc : src);
-  const image = useEncryptedImage(shown);
-  const error = failed || !src || image.locked || image.failed;
+  const image = useEncryptedImage(shown, failed);
+  const error = !src || (failed && !image.url && !image.pending);
   const setError = () => {
     if (fallbackSrc && !fellBack && fallbackSrc !== src) { setFellBack(true); return; }
     setFailed(true);
@@ -291,7 +291,7 @@ export function Img({
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
         <img
-          src={image.src || undefined}
+          src={failed ? image.url || undefined : shown}
           alt={alt}
           loading={eager ? 'eager' : 'lazy'}
           decoding="async"

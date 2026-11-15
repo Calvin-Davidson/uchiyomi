@@ -203,6 +203,7 @@ export interface SeriesTitleArt {
 }
 
 export interface Series {
+  encrypted?: boolean;
   /** Account-owned copy; authorization is always enforced by the server. */
   isPrivate?: boolean;
   /** Admins only: the library it is in. */
@@ -325,6 +326,7 @@ export interface BookMetadata {
 }
 
 export interface Book {
+  encrypted?: boolean;
   id: string;
   /** where this book was last read, when that was another device (see /api/home) */
   lastDevice?: { id: string; name: string | null; at: string } | null;

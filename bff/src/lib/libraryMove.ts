@@ -1,4 +1,5 @@
 import { one, tx } from './db';
+import { seriesEncrypted } from './encryptedMedia';
 import { lockLibrarySaves } from './libraryFolders';
 import { privateBackendSupported, privateFolderOwner, reservedPrivateFolder, folderForScope } from './contentScope';
 import { libraryRows, libraryIdFor, withScansHeld } from './library';
@@ -21,6 +22,8 @@ export async function fileSeriesInLibrary(row: FilingSeries, target: FilingLibra
   if (row.deleted_at || row.merged_into) return {ok:false,code:'admin_cleanup_required',reason:'Restore this series before filing it.'};
   let dest = row.folder;
   if (visibilityChanges) {
+    if (!target!.managed_private && await seriesEncrypted(row.id))
+      return {ok:false,code:'unsafe_files',reason:'Encrypted series must stay in your Private library.'};
     if (!privateBackendSupported()) return {ok:false,code:'unsafe_files',reason:'This library backend does not support private filing.'};
     if (row.work_id) return {ok:false,code:'edition_privacy_conflict',reason:'Unlink editions before changing visibility.'};
     // A merge moves chapter rows, not files: a series that absorbed another reads chapters from that series' folder, and

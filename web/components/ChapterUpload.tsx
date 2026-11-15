@@ -11,7 +11,6 @@ import { ProgressRing } from './ProgressRing';
 import { ContentScopePicker, useContentScope } from './ContentScopePicker';
 import { useAuth } from '@/lib/auth';
 import { getCurrentUser } from '@/lib/api';
-import { encryptedSeriesId } from '@/lib/encryptedMedia';
 import { EncryptedMediaKey, useMediaKey } from './EncryptedMedia';
 
 /** Run the files, saying how far along it is, and say how it went. */
@@ -74,25 +73,25 @@ const progressText = (at: { i: number; n: number }) =>
 
 /** The Upload a series page (app/upload/page.tsx): a series that is not here yet, started from its files. Title and
  *  files in either order; Upload waits for both, and the server refuses a title already here. */
-export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: string; seriesTitle?: string } = {}) {
+export function UploadSeriesSection({ seriesId, seriesTitle, seriesEncrypted }: { seriesId?: string; seriesTitle?: string; seriesEncrypted?: boolean } = {}) {
   const uid = useId();
   const input = useRef<HTMLInputElement>(null);
   const imageInput = useRef<HTMLInputElement>(null), folderInput = useRef<HTMLInputElement>(null);
   const scope = useContentScope();
   const toast = useToast();
-  const [mode, setMode] = useState<'archives' | 'images'>(seriesId && encryptedSeriesId(seriesId) ? 'images' : 'archives');
+  const [mode, setMode] = useState<'archives' | 'images'>(seriesEncrypted ? 'images' : 'archives');
   const [encrypt, setEncrypt] = useState(false);
   const key = useMediaKey();
   const [images, setImages] = useState<File[]>([]);
   const [chapter, setChapter] = useState('');
   const [title, setTitle] = useState('');
   const [files, setFiles] = useState<File[]>([]);
-  const [made, setMade] = useState<{ id: string; title: string } | null>(null);
+  const [made, setMade] = useState<{ id: string; title: string; encrypted: boolean } | null>(null);
   const [takenTitle, setTakenTitle] = useState<string | null>(null);
   const { at, start } = useUpload((run) => {
     if (run.taken) setTakenTitle(title.trim());
     if (run.done && run.seriesId) {
-      if (!made || made.id !== run.seriesId) setMade({ id: run.seriesId, title: seriesTitle || title.trim() || made?.title || '' });
+      if (!made || made.id !== run.seriesId) setMade({ id: run.seriesId, title: seriesTitle || title.trim() || made?.title || '', encrypted });
       setTitle('');
     }
     // The files that were not stored stay listed, so a second try needs no picking again; the rest leave (#375).
@@ -104,7 +103,7 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
   // failed goes into it rather than asking for its title again and being refused as taken.
   const into = seriesId || (!title.trim() && made ? made.id : '');
   const intoTitle = seriesId ? seriesTitle : made?.title;
-  const encrypted = into ? encryptedSeriesId(into) : encrypt;
+  const encrypted = into ? !!(seriesId ? seriesEncrypted : made?.encrypted) : encrypt;
   const ready = (!!into || (!!title.trim() && scope.ready)) && !taken &&
     (!encrypted || (!!key && mode === 'images' && (!!into || scope.visibility === 'private'))) &&
     (mode === 'images' ? images.length > 0 && !!chapter.trim() : files.length > 0) && !at;
@@ -139,7 +138,7 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
       {taken && <p className="mt-1 text-xs text-red-400" role="alert">{tr('A series by that title is already here. Pick another title.')}</p>}</>}
 
       {!into && <div className="mt-3"><ContentScopePicker scope={scope} disabled={!!at} /></div>}
-      {!into && (encrypt || (scope.supported && scope.ready && scope.visibility === 'private')) && (
+      {!into && (encrypt || (scope.ready && scope.visibility === 'private')) && (
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input type="checkbox" checked={encrypt} disabled={!!at || !globalThis.crypto?.subtle} onChange={e => {
             setEncrypt(e.target.checked);
@@ -200,11 +199,8 @@ export function UploadSeriesSection({ seriesId, seriesTitle }: { seriesId?: stri
       )}
       </>}
 
-      <button type="button" onClick={() => {
-        if (!ready || (encrypted && !key)) return;
-        void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility },
-          mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined, encrypted ? key ?? undefined : undefined);
-      }} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
+      <button type="button" onClick={() => void start(into ? { seriesId: into } : { title: title.trim(), fresh: true, visibility: scope.visibility },
+        mode === 'images' ? images : files, mode === 'images' ? chapter.trim() : undefined, encrypted ? key ?? undefined : undefined)} disabled={!ready} className="btn-accent mt-4 w-full sm:w-auto disabled:opacity-50" data-upload-start>
         {at && <ProgressRing progress="spin" size={14} />}
         {at ? progressText(at) : tr('Upload')}
       </button>
