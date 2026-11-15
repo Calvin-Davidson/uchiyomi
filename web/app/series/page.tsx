@@ -1851,7 +1851,7 @@ function SeriesInner() {
           attrs={{ 'aria-haspopup': 'dialog' }} />
         <MoreKey onOpen={openMore} open={moreOpen} menu={wide} />
       </div>
-      {series && <SeriesPrivacyControls id={series.id} isPrivate={series.isPrivate === true} />}
+      {series && <SeriesPrivacyControls id={series.id} isPrivate={series.isPrivate === true} encrypted={!!series.encrypted} />}
     </div>
   );
 
@@ -2174,7 +2174,7 @@ function SeriesInner() {
           {/* The poster, a desktop's: a phone's hero is the cover itself (UI refresh, phone). */}
           <motion.div initial={{ opacity: 0, y: 18, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.5, ease: [0.22, 0.61, 0.36, 1] }}
             className="hidden overflow-hidden rounded-2xl border border-ink-600 shadow-lift lg:block lg:w-full">
-            {series && wide && (isAdmin && !series?.encrypted ? (
+            {series && wide && (isAdmin && !series.encrypted ? (
               <button type="button" onClick={() => setCoverPicker(true)} aria-label={tr('Change cover')} title={tr('Change cover')} data-cover-button
                 className="group relative block h-full w-full focus-visible:outline-2 focus-visible:outline-accent">
                 <Img src={img.seriesThumb(id, series.artVersion, 800)} alt="" className="aspect-[2/3] h-full w-full" />
@@ -2185,7 +2185,7 @@ function SeriesInner() {
           {/* On a phone the reading button and the four keys come first, right under the art (UI refresh, phone); the
               ratings, the languages and the supply line follow. A desktop's left column is the poster and these. */}
           {Actions}
-          {series && series?.encrypted && <div className="mt-3"><EncryptedMediaKey /></div>}
+          {series?.encrypted && <div className="mt-3"><EncryptedMediaKey /></div>}
           {/* The ratings, phone form. The desktop form is the first row of the right column. */}
           {series && <div className="mt-4 lg:hidden"><RatingsPanel anilist={series.yomi?.anilist} rating={rating} onRate={rate} /></div>}
           {/* Full width: beside a cover a 390-px screen left the chips ~210 px. */}
@@ -2303,7 +2303,7 @@ function SeriesInner() {
       {editing && series && (
         // Keyed by the series: its fields are seeded once, from the series it opened on.
         <SeriesEditor key={id} id={id} series={series} tab={editing} onClose={() => setEditing(null)}
-          onSaved={() => { for (const k of [['series', id], ['series-books', id], ['home'], ['library']]) qc.invalidateQueries({ queryKey: k }); }}
+          onSaved={() => { for (const k of [['series', id], ['series-books', id], ['series-privacy'], ['home'], ['library']]) qc.invalidateQueries({ queryKey: k }); }}
           // Its Sources & translations link closes it first: one at a time, as the sheets above.
           onOpenSources={() => { setEditing(null); setSourcesOpen(true); }}
           onNewBanner={newBanner} />

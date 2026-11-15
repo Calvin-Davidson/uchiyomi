@@ -88,6 +88,7 @@ import { installDesktopGuards } from './lib/desktopGuard';
 import { ensureDesktopUser } from './lib/desktopUser';
 import { initialiseBulkChapterDeleteRuns } from './lib/bulkChapterDelete';
 import { authFacts, authModeProblems, authModeWarnings } from './lib/authMode';
+import { recoverSeriesEncryption } from './lib/seriesEncryption';
 
 async function main() {
   // A TRUST_PROXY entry Fastify cannot read stops the server here, naming the entry, before the migrations run; one that
@@ -104,6 +105,7 @@ async function main() {
     console.warn('[net] Uchiyomi Desktop is reached from this computer alone: LOCAL_NETWORKS is ignored.');
   }
   await migrate();
+  await recoverSeriesEncryption();
   await initializeTitleLogoScan();
   await initializeTitleExtractions();
   await initializeTitleExtractionBatch();

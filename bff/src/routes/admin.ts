@@ -16,7 +16,6 @@ import { content as komga } from '../lib/backend';
 import { cacheBytes } from '../lib/imageCache';
 import { runtime } from '../lib/runtime';
 import { persistScan, libraryIdFor, libraryRows, LIBRARY_ROOT, DL_ROOT, setBookDates, setBookMeta } from '../lib/library';
-import { seriesEncrypted } from '../lib/encryptedMedia';
 import { applyMoves, heldElsewhere, lockLibrarySaves, previewMoves, setFolders, storedFolders, underSql, LIBRARY_MAX_FOLDERS } from '../lib/libraryFolders';
 import { containedPath, allWritable, realContainedPath } from '../lib/fsGuard';
 import { deleteSeries, restoreSeries, mergeSeries, mergeRefusal, MergeConflictError, getSeriesRow, deleteSeriesFiles, renameSeriesFolder, forgetSeries, diskSpelling, deleteChapterFiles } from '../lib/libraryAdmin';
@@ -3553,9 +3552,8 @@ export default async function adminRoutes(app: FastifyInstance) {
   // own pages -- nothing found online is shown or looked up for it (lib/seriesArt.ts FIRST_PAGE). Reset to automatic
   // takes it back.
   app.put('/api/admin/series/:id/art', { bodyLimit: ART_BODY_LIMIT }, async (req, reply) => {
-    const requestedId = (req.params as { id: string }).id;
-    if (await seriesEncrypted(requestedId)) return reply.code(409).send({ error: 'encrypted_media' });
     if ((req.body as { kind?: unknown } | null)?.kind === 'logo') return changeTitleArtRoute(req, reply);
+    const requestedId = (req.params as { id: string }).id;
     const b = z.object({
       kind: z.enum(['cover', 'banner']),
       mode: z.enum(['url', 'upload', 'reset', 'first_page', 'source']),
@@ -3567,10 +3565,11 @@ export default async function adminRoutes(app: FastifyInstance) {
     // Use the exact canonical id read from the database, not a route segment, in persistent file paths. Besides
     // removing user input from the path expression, this prevents two malformed ids that safeId() normalises to
     // the same filename from deleting or replacing one another before the foreign key rejects the write.
-    const series = await one<{ id: string }>('SELECT id FROM lib_series WHERE id = $1', [requestedId]);
+    const series = await getSeriesRow(requestedId);
     if (!series) return reply.code(404).send({ error: 'not_found' });
     const id = series.id;
     const { kind, mode } = b.data;
+    if (kind === 'cover' && series.encrypted) return reply.code(409).send({ error: 'encrypted_media' });
     if (mode === 'first_page' && kind !== 'cover') return reply.code(400).send({ error: 'bad_request', message: 'The first page is a cover, not a banner.' });
     const artPath = artFile(id, kind);
     // artFile has the same containment guard for every caller. Keep an explicit sink-adjacent check here too:

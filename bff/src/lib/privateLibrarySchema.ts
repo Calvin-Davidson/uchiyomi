@@ -7,6 +7,11 @@ ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS owner_user_id uuid REFERENCES us
 ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS is_private boolean NOT NULL DEFAULT false;
 ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS encrypted boolean NOT NULL DEFAULT false;
 ALTER TABLE lib_series ADD COLUMN IF NOT EXISTS private_published_at timestamptz;
+CREATE TABLE IF NOT EXISTS series_encryption_jobs (
+ series_id text PRIMARY KEY REFERENCES lib_series(id) ON DELETE RESTRICT,
+ files jsonb NOT NULL,
+ committed boolean NOT NULL DEFAULT false
+);
 CREATE INDEX IF NOT EXISTS lib_series_private_owner_idx ON lib_series(owner_user_id) WHERE is_private;
 ALTER TABLE reading_events ADD COLUMN IF NOT EXISTS is_private boolean NOT NULL DEFAULT false;
 ALTER TABLE read_progress ADD COLUMN IF NOT EXISTS is_private boolean NOT NULL DEFAULT false;

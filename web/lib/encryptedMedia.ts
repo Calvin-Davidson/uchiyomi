@@ -25,7 +25,7 @@ export async function importMediaKey(recoveryKey: string) {
   return crypto.subtle.importKey('raw', bytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-export async function encryptPage(file: File, type: string, key: CryptoKey) {
+export async function encryptPage(file: Blob, type: string, key: CryptoKey) {
   const kind = rasterTypes.indexOf(type);
   if (kind < 0 || file.size + 37 > 64 * 1024 * 1024) throw new Error('Unsupported page type or size');
   const payload = new Uint8Array(file.size + 1);

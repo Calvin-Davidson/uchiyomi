@@ -79,7 +79,7 @@ export function UploadSeriesSection({ seriesId, seriesTitle, seriesEncrypted }: 
   const imageInput = useRef<HTMLInputElement>(null), folderInput = useRef<HTMLInputElement>(null);
   const scope = useContentScope();
   const toast = useToast();
-  const [mode, setMode] = useState<'archives' | 'images'>(seriesEncrypted ? 'images' : 'archives');
+  const [format, setFormat] = useState<'archives' | 'images'>('archives');
   const [encrypt, setEncrypt] = useState(false);
   const key = useMediaKey();
   const [images, setImages] = useState<File[]>([]);
@@ -104,8 +104,9 @@ export function UploadSeriesSection({ seriesId, seriesTitle, seriesEncrypted }: 
   const into = seriesId || (!title.trim() && made ? made.id : '');
   const intoTitle = seriesId ? seriesTitle : made?.title;
   const encrypted = into ? !!(seriesId ? seriesEncrypted : made?.encrypted) : encrypt;
+  const mode = encrypted ? 'images' : format;
   const ready = (!!into || (!!title.trim() && scope.ready)) && !taken &&
-    (!encrypted || (!!key && mode === 'images' && (!!into || scope.visibility === 'private'))) &&
+    (!encrypted || (!!key && (!!into || scope.visibility === 'private'))) &&
     (mode === 'images' ? images.length > 0 && !!chapter.trim() : files.length > 0) && !at;
   const add = (more: File[]) => setFiles((had) => [...had, ...more.filter((f) => !had.some((h) => h.name === f.name))]
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
@@ -140,10 +141,7 @@ export function UploadSeriesSection({ seriesId, seriesTitle, seriesEncrypted }: 
       {!into && <div className="mt-3"><ContentScopePicker scope={scope} disabled={!!at} /></div>}
       {!into && (encrypt || (scope.ready && scope.visibility === 'private')) && (
         <label className="mt-3 flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={encrypt} disabled={!!at || !globalThis.crypto?.subtle} onChange={e => {
-            setEncrypt(e.target.checked);
-            if (e.target.checked) setMode('images');
-          }} />
+          <input type="checkbox" checked={encrypt} disabled={!!at || !globalThis.crypto?.subtle} onChange={e => setEncrypt(e.target.checked)} />
           {tr('End-to-end encrypt pages and cover')}
         </label>
       )}
@@ -153,8 +151,8 @@ export function UploadSeriesSection({ seriesId, seriesTitle, seriesEncrypted }: 
         <EncryptedMediaKey allowGenerate={!into} disabled={!!at} />
       </div>}
       <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label={tr('Upload format')}>
-        <button type="button" onClick={() => setMode('archives')} disabled={!!at || encrypted} aria-pressed={mode === 'archives'} className={`chip text-xs ${mode === 'archives' ? 'chip-active' : ''}`}>{tr('Chapter files')}</button>
-        <button type="button" onClick={() => setMode('images')} disabled={!!at} aria-pressed={mode === 'images'} className={`chip text-xs ${mode === 'images' ? 'chip-active' : ''}`}>{tr('Images as one chapter')}</button>
+        <button type="button" onClick={() => setFormat('archives')} disabled={!!at || encrypted} aria-pressed={mode === 'archives'} className={`chip text-xs ${mode === 'archives' ? 'chip-active' : ''}`}>{tr('Chapter files')}</button>
+        <button type="button" onClick={() => setFormat('images')} disabled={!!at} aria-pressed={mode === 'images'} className={`chip text-xs ${mode === 'images' ? 'chip-active' : ''}`}>{tr('Images as one chapter')}</button>
       </div>
 
       {mode === 'images' ? <div data-upload-images>

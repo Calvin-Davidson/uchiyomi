@@ -6,16 +6,18 @@ import { useAuth } from '@/lib/auth';
 import { t as tr } from '@/lib/i18n';
 import { contentPrivacyOf } from '@/lib/contentScope';
 import { Modal, msgOf } from '@/components/ConfirmDialog';
+import { SeriesEncryptionToggle } from './SeriesEncryptionToggle';
 import { PrivateLibraryManager } from '@/components/PrivateLibraryManager';
 
 interface PrivacyState { isPrivate: boolean; owner: boolean; canChange: boolean }
 interface Destination { id: string; name: string }
 
 /** Owner action: refile this copy deliberately; never claim another person's shared copy. */
-export function SeriesPrivacyControls({ id, isPrivate }: { id: string; isPrivate: boolean }) {
+export function SeriesPrivacyControls({ id, isPrivate, encrypted }: { id: string; isPrivate: boolean; encrypted: boolean }) {
   const { user, status } = useAuth();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [editEncryption, setEditEncryption] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [chosen, setChosen] = useState<string | null>(null);
@@ -64,7 +66,14 @@ export function SeriesPrivacyControls({ id, isPrivate }: { id: string; isPrivate
       {privacy.data?.canChange && <button type="button" className="text-accent underline underline-offset-2"
         onClick={() => { setChosen(null); setError(''); setOpen(true); }}>{tr('Change visibility')}</button>}
       {(privacy.data?.isPrivate ?? isPrivate) && <PrivateLibraryManager seriesId={id} />}
+      {sharing && privacy.data?.owner && user?.role !== 'admin' && <button type="button" className="text-accent underline underline-offset-2"
+        onClick={() => setEditEncryption(true)}>{tr('Edit encryption')}</button>}
     </div>
+    {editEncryption && <Modal title={tr('Edit encryption')} onClose={() => setEditEncryption(false)}>
+      <SeriesEncryptionToggle id={id} encrypted={encrypted} onSaved={() => {
+        for (const queryKey of [['series', id], ['series-books', id], ['series-privacy'], ['library'], ['home']]) void qc.invalidateQueries({ queryKey });
+      }} />
+    </Modal>}
     {open && <Modal title={sharing ? tr('Share this copy?') : tr('Make this copy private?')} onClose={busy ? () => {} : () => setOpen(false)}>
       <p className="text-sm leading-relaxed text-fog-300">{sharing
         ? tr('People with access to the selected library will be able to browse and read this copy. Your earlier private reading history stays private.')

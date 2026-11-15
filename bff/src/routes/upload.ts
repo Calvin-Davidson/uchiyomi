@@ -218,12 +218,9 @@ export async function uploadSeriesRoutes(app: FastifyInstance) {
     }
     if (!scope) return reply.code(404).send({ error: 'not_found' });
     const encrypted = p.data.encrypted === '1';
-    const uid = userIdOf(req);
-    if ((encrypted && (!images || scope.visibility !== 'private' || scope.ownerUserId !== uid ||
-          scope.libraryId !== `private_${uid}` || (known && privateFolderOwner(known.folder) !== uid))) ||
-        (known && encrypted !== known.encrypted)) {
+    if ((encrypted && (!images || scope.visibility !== 'private' || scope.libraryId !== `private_${ctx.userId}` ||
+          (known && privateFolderOwner(known.folder) !== ctx.userId))) || (known && encrypted !== known.encrypted))
       return reply.code(409).send({ error: 'encryption_scope' });
-    }
     let folder = known?.folder ?? await folderForScope(scope, originalFolder);
     if (!known) {
       const collision = new Params(), destination = collision.add(folder);

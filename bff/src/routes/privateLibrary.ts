@@ -3,6 +3,8 @@ import { folderBusy } from '../lib/numbering';
 import { runsInside } from '../lib/updater';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import multipart from '@fastify/multipart';
+import { seriesEncryptionRoutes } from '../lib/seriesEncryption';
 import { authenticate, userIdOf, roleOf } from '../lib/auth';
 import { one, q, tx } from '../lib/db';
 import { viewCtxFor, seriesVisible, nameableIds } from '../lib/visibility';
@@ -47,6 +49,8 @@ export async function privateResponseHeaders(req: FastifyRequest, reply: Fastify
 
 export async function privateLibraryRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authenticate);
+  await app.register(multipart);
+  seriesEncryptionRoutes(app);
   app.get('/api/personal/private-series',async req=>{
     const uid=userIdOf(req),ctx=await viewCtxFor(uid,roleOf(req));
     const rows=await q<{id:string;title:string;deleted:boolean;auto_update:boolean;private_published_at:string|null;work_id:string|null}>(`SELECT id,title,deleted_at IS NOT NULL AS deleted,auto_update,private_published_at,work_id

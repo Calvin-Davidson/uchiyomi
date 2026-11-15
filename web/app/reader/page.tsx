@@ -1376,7 +1376,6 @@ function ReaderInner() {
     staleTime: 5 * 60 * 1000,
   });
   const activeChapter = chapters[flat[current]?.ci ?? 0];
-  const encryptedChapter = activeChapter?.encrypted;
   const pageActionsOnline = showPages && serverReachableHint();
   // Paged mode has no strip between chapters: crossing into another one says so, briefly, so a chapter with no title page is still
   // plainly a new chapter. (The webtoon column has its own divider.) Not on the first chapter opened, and not while the chapter's
@@ -2128,7 +2127,7 @@ function ReaderInner() {
     ];
     if (chapterRefs.length > 0) items.push({ label: tr('Chapters'), onSelect: () => setShowChapters(true) });
     if (talkOn && activeChapter) items.push({ label: tr('Comments'), onSelect: () => setTalkFor(activeChapter.id) });
-    if (encryptedChapter && mediaKey) items.push({ label: tr('Lock encrypted media'), onSelect: () => setMediaKey(null) });
+    if (activeChapter?.encrypted && mediaKey) items.push({ label: tr('Lock encrypted media'), onSelect: () => setMediaKey(null) });
     if (prefs.mode === 'paged') {
       items.push({ label: prefs.spread ? tr('Read in single pages') : tr('Read in double spreads'), onSelect: () => setPref({ spread: !prefs.spread }), divider: true });
       // v0.89.0 (#262): this page's merge or split, as the reader settings sheet offers it.
@@ -2258,14 +2257,10 @@ function ReaderInner() {
     // `data-page` / `data-chapter`: what is being read, for the browser walks (test/e2e/v610Walk-reader.mjs) -- the counter
     // that says it lives in the auto-hiding footer. Nothing reads them in the app.
     <div className="fixed inset-0 z-40 bg-ink-950" data-page={pageInChapter || undefined} data-chapter={activeChapter?.id}>
-      {encryptedChapter && !mediaKey && (
-        <div className="absolute inset-0 z-[70] grid place-items-center bg-ink-950 p-6">
-          <div className="w-full max-w-md space-y-4">
-            <EncryptedMediaKey />
-            {seriesHref && <Link href={seriesHref} className="chip text-xs">{tr('Open the series page')}</Link>}
-          </div>
-        </div>
-      )}
+      {activeChapter?.encrypted && !mediaKey && <div className="absolute inset-0 z-[70] grid place-content-center gap-4 bg-ink-950 p-6">
+        <EncryptedMediaKey />
+        {seriesHref && <Link href={seriesHref} className="chip w-fit text-xs">{tr('Open the series page')}</Link>}
+      </div>}
       {readerMenu.element}
       <div className="pointer-events-none absolute inset-0 z-30 bg-black" style={{ opacity: 1 - prefs.brightness }} />
       {/* Ambient cover wash framing the reader: the look, by default. Its switch (Cover colour at the edges, #170)
@@ -2669,8 +2664,8 @@ function ReaderInner() {
            flag anyway. */
         <PageGrid title={activeChapter?.title || tr('Pages')} pages={gridPages} current={current}
           onPick={jumpTo} onClose={() => setShowPages(false)}
-          onManage={!encryptedChapter && user?.role === 'admin' && pageActionsOnline && activeChapter ? () => { setShowPages(false); setCleanupFor({ id: activeChapter.id }); } : undefined}
-          onRestore={!encryptedChapter && user?.role === 'admin' && pageActionsOnline && activeChapter ? (page) => { setShowPages(false); setCleanupFor({ id: activeChapter.id, restore: page }); } : undefined}
+          onManage={user?.role === 'admin' && pageActionsOnline && activeChapter && !activeChapter.encrypted ? () => { setShowPages(false); setCleanupFor({ id: activeChapter.id }); } : undefined}
+          onRestore={user?.role === 'admin' && pageActionsOnline && activeChapter && !activeChapter.encrypted ? (page) => { setShowPages(false); setCleanupFor({ id: activeChapter.id, restore: page }); } : undefined}
           onToggleJunk={!pageActionsOnline ? undefined : toggleJunk} />
       )}
       {cleanupFor && <PageCleanupPanel bookId={cleanupFor.id} initialRestore={cleanupFor.restore}

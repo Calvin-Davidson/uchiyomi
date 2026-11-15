@@ -898,25 +898,20 @@ export const owned = {
     // stays a page -- it has a real image behind it and keeps its number -- the mark only says what the
     // image is. Same idiom as `junk` on the route.
     const missing = new Set(Array.isArray(r.missing_pages) ? r.missing_pages.map(Number) : []);
-    const contentVersion = await pageFileVersion(path.join(r.root || LIBRARY_ROOT, r.file)).catch(() => undefined);
-    const stable = async <T>(listed: T[]): Promise<T[]> => {
-      const after = await pageFileVersion(path.join(r.root || LIBRARY_ROOT, r.file)).catch(() => undefined);
-      if (after !== contentVersion) throw Object.assign(new Error('The chapter changed while its page list was being read. Reload it.'), { statusCode: 409 });
-      return listed;
-    };
-    if (r.encrypted) {
-      const names = await cbzPages(path.join(r.root || LIBRARY_ROOT, r.file)).catch(() => []);
-      return stable(names.map((fileName, i) => ({
-        number: i + 1, fileName, mediaType: ENCRYPTED_MEDIA_TYPE, width: null, height: null, sizeBytes: null, contentVersion,
-      })));
-    }
-    const cleanup = await pageCleanupMetadata({ bookId: id, file: path.join(r.root || LIBRARY_ROOT, r.file), store: path.join(env.CONFIG_DIR, 'page-trash') });
+    const file = path.join(r.root || LIBRARY_ROOT, r.file);
+    const contentVersion = await pageFileVersion(file).catch(() => undefined);
+    const cleanup = r.encrypted ? null : await pageCleanupMetadata({ bookId: id, file, store: path.join(env.CONFIG_DIR, 'page-trash') });
     const mark = <T extends { number: number }>(pg: T) => ({ ...pg,
       ...(missing.has(pg.number) ? { missing: true as const } : {}),
       ...(contentVersion ? { contentVersion } : {}),
-      ...(cleanup.removed.has(pg.number) ? { removed: true as const, restorable: cleanup.restorable.has(pg.number), junk: true, width: 32, height: 48 } : {}),
+      ...(cleanup?.removed.has(pg.number) ? { removed: true as const, restorable: cleanup.restorable.has(pg.number), junk: true, width: 32, height: 48 } : {}),
     });
-    if (Array.isArray(r.page_dims) && r.page_dims.length && (!cleanup.revision || !contentVersion || r.page_dims_version === contentVersion)) {
+    const stable = async <T>(listed: T[]): Promise<T[]> => {
+      const after = await pageFileVersion(file).catch(() => undefined);
+      if (after !== contentVersion) throw Object.assign(new Error('The chapter changed while its page list was being read. Reload it.'), { statusCode: 409 });
+      return listed;
+    };
+    if (!r.encrypted && Array.isArray(r.page_dims) && r.page_dims.length && (!cleanup?.revision || !contentVersion || r.page_dims_version === contentVersion)) {
       // The cache keeps the order its pages were measured in. Read it in today's page order, so sizes measured before
       // pageCmp (#436) never show a folder-wrapped archive's pages in the old order, or out of step with the numbers
       // page cleanup removes pages by. Reintroduce by returning page_dims as stored: "cached page sizes follow the
@@ -924,12 +919,14 @@ export const owned = {
       const dims = pagesInNameOrder(r.file) ? [...r.page_dims].sort((a, b) => pageCmp(a.name, b.name)) : r.page_dims;
       return stable(dims.map((pd, i) => mark({ number: i + 1, fileName: pd.name, mediaType: mediaType(pd.name), width: pd.width ?? null, height: pd.height ?? null, sizeBytes: null })));
     }
-    const dims = await cbzPageDims(`${r.root || LIBRARY_ROOT}/${r.file}`).catch(() => [] as Array<{ name: string; width: number | null; height: number | null }>);
+    const dims = r.encrypted
+      ? (await cbzPages(file).catch(() => [])).map(name => ({ name, width: null, height: null }))
+      : await cbzPageDims(file).catch(() => []);
     // This is a cache, so a failed write must never hide readable pages; but once this call resolves a
     // second reader should be able to use the cache instead of opening the archive again. Fire-and-forget
     // made that ordering depend on database load and was exposed by the partial-chapter completion suite.
-    if (dims.length) await q('UPDATE lib_books SET pages = $1, page_dims = $2, page_dims_version = $4 WHERE id = $3', [dims.length, JSON.stringify(dims), id, contentVersion ?? null]).catch(() => {});
-    return stable(dims.map((pd, i) => mark({ number: i + 1, fileName: pd.name, mediaType: mediaType(pd.name), width: pd.width, height: pd.height, sizeBytes: null })));
+    if (!r.encrypted && dims.length) await q('UPDATE lib_books SET pages = $1, page_dims = $2, page_dims_version = $4 WHERE id = $3', [dims.length, JSON.stringify(dims), id, contentVersion ?? null]).catch(() => {});
+    return stable(dims.map((pd, i) => mark({ number: i + 1, fileName: pd.name, mediaType: r.encrypted ? ENCRYPTED_MEDIA_TYPE : mediaType(pd.name), width: pd.width, height: pd.height, sizeBytes: null })));
   },
 
   // Next/previous compare (number, file) rather than number alone. Two chapters legitimately share a

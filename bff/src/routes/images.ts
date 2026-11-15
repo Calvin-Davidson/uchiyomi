@@ -326,11 +326,11 @@ const bookFileAbs = async (id: string, ctx: ViewCtx) => {
 // to give anyone: then the lowest chapter that is shown, picked the way the scan picks the cover (lib/library.ts, live
 // first). Reintroduce by reading cover_book_id alone: "a hidden notice as the cover chapter" in
 // noticeSurfaces.int.test.ts finds the series' cover a 404.
-const firstPageInput = async (id: string, ctx: ViewCtx): Promise<Buffer> => {
+const firstPageInput = async (id: string, ctx: ViewCtx, encrypted = false): Promise<Buffer> => {
   const s = await one<{ id: string; cover_book_id: string | null }>(
     `SELECT s.id, ${firstPageBookOf('s')} AS cover_book_id FROM lib_series s WHERE s.id = $1`, [id]);
   const kept = s ? await readFile(artFile(s.id, 'page')).catch(() => null) : null;
-  if (kept) return kept;
+  if (kept && (!encrypted || isEncryptedPage(kept))) return kept;
   const abs = s?.cover_book_id ? (await bookFileAbs(s.cover_book_id, ctx))?.abs : null;
   if (!abs) throw Object.assign(new Error('no cover'), { statusCode: 404 });
   // A cover chapter whose file is gone -- deleted or moved by hand, which is what Rescan everything finds (v0.55.4), or a
@@ -697,7 +697,7 @@ export const serveLibSeriesThumb = async (req: FastifyRequest, reply: FastifyRep
   // bookFileAbs now carries for chapters. Without it a hidden series' cover still renders, which is
   // how a deleted series has always kept its thumbnail.
   if (!(await seriesVisible(id, vc(req)))) return reply.code(404).send({ error: 'not_found' });
-  if (await seriesEncrypted(id)) return sendEncryptedPage(reply, await firstPageInput(id, vc(req)));
+  if (await seriesEncrypted(id)) return sendEncryptedPage(reply, await firstPageInput(id, vc(req), true));
   const w = thumbWidth(req);
   const wk = w === 400 ? '' : `:w${w}`; // 400 keeps the legacy cache key so existing entries stay warm
   // admin override wins (uploaded file or pasted URL); variant carries updated_at so edits bust the cache

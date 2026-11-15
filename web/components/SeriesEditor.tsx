@@ -35,6 +35,7 @@ import { msgOf } from './ConfirmDialog';
 import { MoveToLibrary } from './MoveToLibrary';
 import { moveSeriesToLibrary, type LibraryDestination } from '@/lib/moveLibrary';
 import { Backdrop, useRtl } from './ui';
+import { SeriesEncryptionToggle } from './SeriesEncryptionToggle';
 import { ProgressRing } from './ProgressRing';
 import { HeroTitle } from './HeroTitle';
 import { TitleExtractionButton } from './TitleExtraction';
@@ -614,6 +615,8 @@ function FilesPane({ id, series, onSaved }: { id: string; series: Series; onSave
   return (
     <>
       <LibraryRow id={id} series={series} onSaved={onSaved} />
+      {series.isPrivate && series.libraryId === `private_${getCurrentUser()}` &&
+        <SeriesEncryptionToggle id={id} encrypted={!!series.encrypted} onSaved={onSaved} />}
       {/* Where it is on disk (#136): the folder as full paths, one per root its chapters are under, each copied with
           one tap. LTR whatever the page's direction: a path is not a sentence. */}
       {!!series.paths?.length && (

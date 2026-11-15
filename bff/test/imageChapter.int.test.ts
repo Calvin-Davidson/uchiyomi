@@ -32,6 +32,7 @@ before(async()=> {
   [uid,other]=(await db.q(`INSERT INTO users(username,display_name,password_hash,role,auth_kind,perms) VALUES
     ('image-http-admin','Image admin','x','admin','password','{}'),('image-http-other','Image other','x','user','password','{"canUploadManually":true}') RETURNING id`)).map((u:any)=>u.id);
   app=(await import('fastify')).default();await app.register((await import('@fastify/jwt')).default,{secret:process.env.JWT_SECRET!});await app.register((await import('../src/routes/upload')).uploadSeriesRoutes);
+  await app.register((await import('../src/routes/privateLibrary')).privateLibraryRoutes);
   address=await app.listen({host:'127.0.0.1',port:0});authorization=`Bearer ${app.jwt.sign({sub:uid,role:'admin'})}`;
   const sharp=(await import('sharp')).default;
   red=await sharp({create:{width:2,height:3,channels:3,background:'#ff0000'}}).png().toBuffer();
@@ -137,5 +138,41 @@ test('a chosen shared library is reserved before publication even without a path
     assert.equal((await post(url(failedTitle),[['1.png',red]])).status,200,'same destination is available for a correct retry');
   } finally {
     publication.mock.restore();await db.q('DELETE FROM lib_series WHERE library_id=$1',[library]);await db.q('DELETE FROM libraries WHERE id=$1',[library]);
+  }
+});
+
+test('series encryption rewrites private chapter pages in both directions and preserves catalogue IDs', { skip }, async () => {
+  const { importMediaKey, encryptPage, decryptPage } = await import('../../web/lib/encryptedMedia');
+  const uploaded = await post(target('&visibility=private').replace(encodeURIComponent(title), encodeURIComponent('Encryption roundtrip')), [['1.png', red]]);
+  assert.equal(uploaded.status, 200, JSON.stringify(uploaded));
+  const { seriesId, bookId, file } = uploaded.data;
+  const path = `${address}/api/series/${seriesId}/encryption`;
+  const read = (url: string, auth = authorization) => fetch(url, { headers: { authorization: auth } });
+  const key = await importMediaKey('01'.repeat(32));
+  const foreign = `Bearer ${app.jwt.sign({ sub: other, role: 'user' })}`;
+  assert.equal((await read(path, foreign)).status, 404);
+  assert.equal((await read(`${address}/api/series/${series}/encryption`)).status, 404);
+
+  for (const target of [true, false]) {
+    const state = await read(path);
+    assert.equal(state.status, 200);
+    const { revision, books, encrypted } = await state.json() as { revision: string; books: {id: string; version: string}[]; encrypted: boolean };
+    assert.equal(encrypted, !target);
+    assert.equal(books[0].id, bookId);
+    const raw = await read(`${path}/${bookId}/1?version=${books[0].version}`);
+    assert.equal(raw.status, 200);
+    const original = await raw.blob();
+    const page = target ? await encryptPage(original, original.type, key) : await decryptPage(await original.arrayBuffer(), key);
+    const form = new FormData();
+    form.append('pages', page, 'page');
+    const response = await fetch(`${path}?revision=${revision}&encrypted=${target ? '1' : '0'}`, {
+      method: 'PUT', headers: { authorization }, body: form,
+    });
+    assert.equal(response.status, 200, await response.text());
+    const [row] = await db.q('SELECT b.id,b.file,s.encrypted FROM lib_books b JOIN lib_series s ON s.id=b.series_id WHERE s.id=$1', [seriesId]);
+    assert.deepEqual(row, { id: bookId, file, encrypted: target });
+    const { cbzEntry } = await import('../src/lib/library');
+    const stored = await cbzEntry(join(root, 'dl', file), '00001.png');
+    assert.deepEqual(stored, target ? Buffer.from(await page.arrayBuffer()) : red);
   }
 });
