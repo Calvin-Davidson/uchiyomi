@@ -1280,12 +1280,12 @@ function ReaderInner() {
   const prevPos = useRef<{ ci: number } | null>(null);
   /** Bumped when a tap's page turn can no longer be taken back, so the progress below is read again. */
   const [turnSettled, setTurnSettled] = useState(0);
-  const sendProgress = useCallback((chId: string, sId: string, page: number, completed: boolean) => {
+  const sendProgress = useCallback((chId: string, sId: string, page: number, completed: boolean, readInIncognito = false) => {
     const actor=user?.id;if(!actor || getCurrentUser()!==actor)return;
     // `at` is what lets the server refuse a stale write. The offline outbox always sent it; the live path
     // never did, so every live ping took the "no timestamp" leg of the guard and applied unconditionally --
     // a desktop tab left open on chapter 3 could still rewind the phone that had read to chapter 9.
-    const payload = { page, completed, seriesId: sId, deviceId: deviceId(), at: Date.now(), ...(incognitoRef.current ? { incognito: true } : {}) };
+    const payload = { page, completed, seriesId: sId, deviceId: deviceId(), at: Date.now(), ...(readInIncognito || incognitoRef.current ? { incognito: true } : {}) };
     // Alongside the write, not instead of it: this is what a downloaded chapter resumes from with no network.
     void noteOfflineProgress(chId, page, completed,actor);
     api(`/api/books/${chId}/progress`, { method: 'PUT', json: payload,expectedOwnerId:actor }).catch(error=>{
@@ -1334,9 +1334,11 @@ function ReaderInner() {
       sendProgress(ch.id, ch.seriesId, ch.pages[ch.pages.length - 1]?.number ?? it.number, true);
       return;
     }
+    // The page was already read. Turning Incognito off before the debounce fires must leave it private.
+    const readInIncognito = incognitoRef.current;
     const t = setTimeout(() => {
       lastSent.current = tag;
-      sendProgress(ch.id, ch.seriesId, it.number, false);
+      sendProgress(ch.id, ch.seriesId, it.number, false, readInIncognito);
     }, 600);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps

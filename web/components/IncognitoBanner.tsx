@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { t as tr } from '@/lib/i18n';
 import { incognitoOf, incognitoRef } from '@/lib/incognito';
+import { updateOfflineIncognito } from '@/lib/offlineIdentity';
 import { IcEyeOff } from './icons';
 import { useToast } from './Toast';
 
@@ -13,17 +14,18 @@ export { incognitoRef } from '@/lib/incognito';
 
 /**
  * The account's Incognito reading and the way to change it. Keeps incognitoRef in step for the reader's payload; the
- * change is applied at once and put back if the server refuses it, as every account switch is.
+ * change is applied once the server confirms it.
  */
 export function useIncognito(): { on: boolean; set: (next: boolean) => Promise<void> } {
   const { user, setSettings } = useAuth();
   const on = incognitoOf(user?.settings);
   useEffect(() => { incognitoRef.current = on; }, [on]);
   const set = async (next: boolean) => {
+    if (!user) return;
+    await api('/api/settings', { method: 'PUT', json: { incognito: next }, expectedOwnerId: user.id });
+    updateOfflineIncognito(user.id, next);
     setSettings({ incognito: next });
     incognitoRef.current = next;
-    try { await api('/api/settings', { method: 'PUT', json: { incognito: next } }); }
-    catch (e) { setSettings({ incognito: !next }); incognitoRef.current = !next; throw e; }
   };
   return { on, set };
 }

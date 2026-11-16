@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState, Fragment, React
 import { QueryClientContext } from '@tanstack/react-query';
 import { api, ApiError, beginAccountTransition, getCurrentUser, refreshSession, setAccessToken, setCurrentUser } from './api';
 import { readOfflineIdentity, writeOfflineIdentity, clearOfflineIdentity, OfflineIdentity } from './offlineIdentity';
+import { incognitoOf, incognitoRef } from './incognito';
 import { deviceId, deviceName } from './device';
 import { clearShownOnce } from './shownOnce';
 import { applyReduceEffects, restoreReduceEffects } from './effects';
@@ -185,6 +186,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     shownUser.current = u.id;
     void tellWorkerUser(u.id);
     writeOfflineIdentity(u, exp);
+    incognitoRef.current = incognitoOf(u.settings);
     setUser(u);
     applyAccent(u.settings);
     // ⚠️ Before setStatus, never in an effect after it: `authed` is what mounts CinematicFX, and a class that
@@ -204,10 +206,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // skips every event stamped with an owner while that is true -- so without this line, reading queued
     // offline would be dropped silently by the one flush that runs after the app is closed.
     void tellWorkerUser(saved.id);
+    incognitoRef.current = saved.incognito === true;
     setUser({
       id: saved.id, username: saved.username, displayName: saved.displayName,
       role: saved.role, perms: saved.perms, avatar: saved.avatar,
-      settings: saved.accent ? { accent: saved.accent } : {},
+      settings: { ...(saved.accent ? { accent: saved.accent } : {}), incognito: incognitoRef.current },
     });
     applyAccent({ accent: saved.accent });
     // No server to ask, so the device's copy, which the last online sign-in of this same account wrote (the

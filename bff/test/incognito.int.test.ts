@@ -125,6 +125,9 @@ test('Incognito reading, through the routes', { skip }, async (t) => {
     // Reintroduce by writing the reading event regardless of `incognito` in writeProgress: this reads 2.
     assert.equal(await events(), 1, 'no reading event');
     assert.equal(await pushedBy(2, 1500), 1, 'no tracker push');
+    const history = await app.inject({ method: 'GET', url: '/api/history', headers: H() });
+    assert.equal(history.statusCode, 200, history.payload);
+    assert.deepEqual(history.json().content.map((row: { book_id: string }) => row.book_id), [book(1)]);
   });
 
   await t.test("the request's own flag is enough: a chapter read while it was on, sent after it went off", async () => {

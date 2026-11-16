@@ -50,11 +50,11 @@ export interface OfflineIdentity {
   perms?: Record<string, boolean>;
   avatar?: { emoji?: string; color?: string };
   /**
-   * ⚠️ The ONLY field carried over from `settings`, deliberately. `app_settings.data` is free-form JSONB
-   * that anything may write to, and this record sits in cleartext on the device -- so it is a whitelist of
-   * one, not a copy. `applyAccent` reads `settings.accent` and nothing else.
+   * These settings are explicitly selected because the offline shell and reader need them.
+   * The record is stored in cleartext.
    */
   accent?: string;
+  incognito?: boolean;
   /** Refresh-token expiry in ms since the epoch, as reported by the server. */
   exp: number;
 }
@@ -133,11 +133,21 @@ export function writeOfflineIdentity(u: UserLike, exp: number | undefined): void
     perms: u.perms,
     avatar: u.avatar,
     accent: typeof u.settings?.accent === 'string' ? u.settings.accent : undefined,
+    incognito: u.settings?.incognito === true,
     exp,
   };
   try {
     ls.setItem(KEY, JSON.stringify(rec));
   } catch { /* quota or private mode: the app still works online, it just will not open offline */ }
+}
+
+/** Mirror a confirmed setting change without extending the saved session. */
+export function updateOfflineIncognito(userId: string, on: boolean): void {
+  const saved = readOfflineIdentity();
+  if (saved?.id !== userId) return;
+  try {
+    store()?.setItem(KEY, JSON.stringify({ ...saved, incognito: on }));
+  } catch { /* offline storage is best effort */ }
 }
 
 /** Synchronous by contract — see the note above on why sign-out cannot afford to await this. */

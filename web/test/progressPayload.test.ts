@@ -16,5 +16,7 @@ test('the live progress payload sends at: Date.now()', () => {
   // v0.61.0, updated deliberately: the same line now also says a page was read under Incognito reading, read from the
   // shell's switch at the moment of the write (lib/incognito.ts incognitoRef), so the live write -- and the outbox entry
   // a failed one becomes -- carries it. Reintroduce the payload without it: this fails.
-  assert.match(line!, /\.\.\.\(incognitoRef\.current \? \{ incognito: true \} : \{\}\)/, 'and whether it was read incognito');
+  assert.match(line!, /\.\.\.\(readInIncognito \|\| incognitoRef\.current \? \{ incognito: true \} : \{\}\)/, 'and whether it was read incognito');
+  assert.match(src, /const readInIncognito = incognitoRef\.current;\s*const t = setTimeout\(\(\) => \{\s*lastSent\.current = tag;\s*sendProgress\(ch\.id, ch\.seriesId, it\.number, false, readInIncognito\)/,
+    'debounced progress must preserve incognito mode from before the timer');
 });

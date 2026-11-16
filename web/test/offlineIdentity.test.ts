@@ -97,7 +97,19 @@ test('an identity round-trips, and carries only what the offline UI needs', () =
   assert.equal(got.accent, '#7c5cff');
 });
 
-test('settings are whitelisted to the accent, not mirrored wholesale', () => {
+test('an offline identity keeps confirmed incognito changes for its own account', () => {
+  mem.clear();
+  const exp = Date.now() + HOUR;
+  ident.writeOfflineIdentity({ ...USER, settings: { incognito: true } }, exp);
+  assert.equal(ident.readOfflineIdentity()?.incognito, true);
+  ident.updateOfflineIncognito('another-account', false);
+  assert.equal(ident.readOfflineIdentity()?.incognito, true);
+  ident.updateOfflineIncognito(USER.id, false);
+  assert.equal(ident.readOfflineIdentity()?.incognito, false);
+  assert.equal(ident.readOfflineIdentity()?.exp, exp);
+});
+
+test('settings are limited to the offline whitelist', () => {
   mem.clear();
   // `app_settings.data` is free-form JSONB and this record sits in cleartext on the device.
   // Reintroduce by copying `settings` across and anything the server ever stores there leaks to disk.
