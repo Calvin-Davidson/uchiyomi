@@ -57,7 +57,7 @@ export async function onDeckPicks(uid: string, ctx: ViewCtx, o: { window: DeckWi
     `WITH touched AS (
        SELECT series_id, max(updated_at) AS last_read
          FROM read_progress rp
-        WHERE rp.user_id = ${uidP} ${rows}
+        WHERE rp.user_id = ${uidP} AND NOT rp.incognito ${rows}
           AND EXISTS (SELECT 1 FROM lib_series s WHERE s.id = rp.series_id AND ${browsable('s', ctx, p)})
         GROUP BY series_id
         ${group}
@@ -68,6 +68,7 @@ export async function onDeckPicks(uid: string, ctx: ViewCtx, o: { window: DeckWi
                 -- the chapter you are part-way through wins
                 (SELECT p.book_id FROM read_progress p
                    WHERE p.user_id = ${uidP} AND p.series_id = r.series_id AND p.completed = false
+                     AND NOT p.incognito
                      -- not a notice chapter the admin hides (lib/noticeChapters.ts): it is no chapter to resume
                      AND NOT ${noticeBook('p.book_id')}
                      -- nor one whose pages were deleted (v0.60.1, found in Squeaks72's fork): it used to win here
@@ -85,7 +86,7 @@ export async function onDeckPicks(uid: string, ctx: ViewCtx, o: { window: DeckWi
                      AND NOT ${noticeBook('b.id')}
                      AND NOT EXISTS (
                        SELECT 1 FROM read_progress p2
-                        WHERE p2.user_id = ${uidP} AND p2.book_id = b.id AND p2.completed
+                        WHERE p2.user_id = ${uidP} AND p2.book_id = b.id AND p2.completed AND NOT p2.incognito
                      )
                    ORDER BY COALESCE(bo.number, b.number) ASC, b.file ASC LIMIT 1)
               ) AS book_id
@@ -93,7 +94,7 @@ export async function onDeckPicks(uid: string, ctx: ViewCtx, o: { window: DeckWi
      )
      SELECT book_id, series_id, last_read FROM pick
       WHERE book_id IS NOT NULL      -- a series you have finished entirely drops out, correctly
-        -- "Remove from Keep reading": hidden until it is read again (read_progress.updated_at moves past hidden_at)
+        -- "Remove from Keep reading": hidden until non-incognito progress moves past hidden_at
         AND NOT EXISTS (SELECT 1 FROM keep_reading_hidden h
                          WHERE h.user_id = ${uidP} AND h.series_id = pick.series_id AND h.hidden_at >= pick.last_read)
       ORDER BY last_read DESC
@@ -112,7 +113,8 @@ export async function keepReadingHidden(uid: string): Promise<Array<{ seriesId: 
   const rows = await q<{ series_id: string; hidden_at: Date }>(
     `SELECT h.series_id, h.hidden_at FROM keep_reading_hidden h
       WHERE h.user_id = $1
-        AND h.hidden_at >= COALESCE((SELECT max(updated_at) FROM read_progress rp WHERE rp.user_id = h.user_id AND rp.series_id = h.series_id), '-infinity')
+        AND h.hidden_at >= COALESCE((SELECT max(updated_at) FROM read_progress rp
+          WHERE rp.user_id = h.user_id AND rp.series_id = h.series_id AND NOT rp.incognito), '-infinity')
       ORDER BY h.hidden_at DESC`,
     [uid],
   );

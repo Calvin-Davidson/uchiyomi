@@ -34,7 +34,7 @@ export interface ProgressWrite {
 
 export { reachedEnd } from './progressRules';
 
-export async function writeProgress(w: ProgressWrite): Promise<void> {
+export async function writeProgress(w: ProgressWrite): Promise<{ incognito: boolean }> {
   // `at` is when the event happened, not when it arrived. The offline outbox replays events minutes or days
   // later, and `page = EXCLUDED.page` applied them unconditionally -- so a queued page 12 landing after the
   // reader had gone on to page 60 on another device rewound the bookmark, and the reader resumed 48 pages
@@ -81,4 +81,5 @@ export async function writeProgress(w: ProgressWrite): Promise<void> {
   // Finishing a chapter is the only thing worth telling an external tracker about. Fire-and-forget on
   // purpose: a tracker being slow or down must never delay a page turn or fail the write above.
   if (w.completed && w.seriesId && w.seriesId !== 'unknown' && !incognito) pushSeriesProgressAsync(w.userId, w.seriesId);
+  return { incognito };
 }

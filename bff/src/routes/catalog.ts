@@ -1208,9 +1208,9 @@ export default async function catalogRoutes(app: FastifyInstance) {
     // -- and a 500 is a retry forever, where a 404 lets it drop the entry.
     if (!sid) return reply.code(404).send({ error: 'not_found' });
 
-    await writeProgress({ userId: uid, bookId: id, seriesId: sid, page, completed: done, silent, deviceId, at, incognito });
+    const saved = await writeProgress({ userId: uid, bookId: id, seriesId: sid, page, completed: done, silent, deviceId, at, incognito });
 
-    if (NATIVE_PROGRESS && actsAsAdmin(req)) komga.setReadProgress(vc(req), id, page, done).catch(() => {});
+    if (NATIVE_PROGRESS && actsAsAdmin(req) && !saved.incognito) komga.setReadProgress(vc(req), id, page, done).catch(() => {});
     return reply.send({ ok: true });
   });
 }

@@ -100,6 +100,15 @@ after(async () => {
 });
 
 test('Incognito reading, through the routes', { skip }, async (t) => {
+  await t.test('a series first read in incognito stays off Keep reading when private progress syncs later', async () => {
+    const r = await finish(4, { incognito: true });
+    assert.equal(r.statusCode, 200, r.payload);
+    const home = await app.inject({ method: 'GET', url: '/api/home', headers: H() });
+    assert.equal(home.statusCode, 200, home.payload);
+    assert.deepEqual(home.json().onDeck, []);
+    await q('DELETE FROM read_progress WHERE user_id = $1 AND book_id = $2', [uid, book(4)]);
+  });
+
   await t.test('with it off, finishing a chapter records it and tells the tracker (the control)', async () => {
     const r = await finish(1);
     assert.equal(r.statusCode, 200, r.payload);
@@ -121,7 +130,10 @@ test('Incognito reading, through the routes', { skip }, async (t) => {
     assert.equal((await setIncognito(true)).statusCode, 200);
     const r = await finish(2); // the request says nothing about it: the server reads the switch
     assert.equal(r.statusCode, 200, r.payload);
-    assert.deepEqual(await progressOf(2), { page: 9, completed: true }, 'Keep reading and resuming still work');
+    assert.deepEqual(await progressOf(2), { page: 9, completed: true }, 'the private resume position is saved');
+    const home = await app.inject({ method: 'GET', url: '/api/home', headers: H() });
+    assert.equal(home.statusCode, 200, home.payload);
+    assert.deepEqual(home.json().onDeck.map((row: { id: string }) => row.id), [book(2)]);
     // Reintroduce by writing the reading event regardless of `incognito` in writeProgress: this reads 2.
     assert.equal(await events(), 1, 'no reading event');
     assert.equal(await pushedBy(2, 1500), 1, 'no tracker push');
