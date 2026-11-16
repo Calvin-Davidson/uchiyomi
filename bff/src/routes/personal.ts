@@ -1,4 +1,5 @@
 import { deleteAccountPreservingPrivate } from '../lib/contentScope';
+import { remoteHistory } from '../lib/remoteReading';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { hash } from '@node-rs/argon2';
 import rateLimit from '@fastify/rate-limit';
@@ -668,13 +669,12 @@ export default async function personalRoutes(app: FastifyInstance) {
 
   // ---- history & stats ----
   app.get('/api/history', async (req) => {
-    const limit = Math.min(Number((req.query as Record<string, string>).limit) || 50, 200);
+    const limit = Math.max(1, Math.min(Math.floor(Number((req.query as Record<string, string>).limit) || 50), 200));
     const hp = new Params();
     const hctx = vc(req);
     const uid = hp.add(userIdOf(req));
     // most-recent event per book, newest first, with display titles for the history timeline
-    return {
-      content: await q(
+    const local = await q(
         `SELECT e.book_id, e.series_id, e.page, e.completed, e.created_at,
                 COALESCE(b.title, '') AS book_title, COALESCE(s.title, '') AS series_title
          FROM (
@@ -692,8 +692,9 @@ export default async function personalRoutes(app: FastifyInstance) {
          ORDER BY e.created_at DESC
          LIMIT ${hp.add(limit)}`,
         hp.values as any[],
-      ),
-    };
+      );
+    const remote = await remoteHistory(userIdOf(req),limit);
+    return {content:[...local,...remote].sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime()).slice(0,limit)};
   });
 
   app.get('/api/stats', async (req) => {

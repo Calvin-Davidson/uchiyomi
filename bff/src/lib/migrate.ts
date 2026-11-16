@@ -10,6 +10,7 @@ import { PRIVATE_LIBRARY_DDL } from './privateLibrarySchema';
 import { EXTERNAL_READER_DDL } from './externalReaderSchema';
 import { IMPORT_ENHANCEMENT_DDL } from './importEnhancementSchema';
 import { DISCOVERY_HUB_DDL } from './discoveryHubSchema';
+import { REMOTE_READING_DDL } from './remoteReading';
 
 // NOTE: gen_random_uuid() is in Postgres core (v13+); no pgcrypto extension needed.
 // (The supabase/postgres image's event triggers reject CREATE EXTENSION under a custom role.)
@@ -2239,6 +2240,7 @@ ALTER TABLE listing_progress ADD COLUMN IF NOT EXISTS incognito boolean NOT NULL
 ${EXTERNAL_READER_DDL}
 ${IMPORT_ENHANCEMENT_DDL}
 ${DISCOVERY_HUB_DDL}
+${REMOTE_READING_DDL}
 
 -- v0.108.0 (#433): reading progress an import brings over (lib/importProgress.ts). All additive, with defaults:
 -- v0.107.0 boots on this schema and never names them.

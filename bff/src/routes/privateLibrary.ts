@@ -27,6 +27,7 @@ export async function privateResponseHeaders(req: FastifyRequest, reply: Fastify
     const row=await one<{private_content:boolean}>(`SELECT EXISTS(SELECT 1 FROM lib_series WHERE owner_user_id=$1 AND is_private)
       OR EXISTS(SELECT 1 FROM reading_events WHERE user_id=$1 AND is_private)
       OR EXISTS(SELECT 1 FROM read_progress WHERE user_id=$1 AND is_private)
+      OR EXISTS(SELECT 1 FROM remote_books WHERE user_id=$1)
       OR EXISTS(SELECT 1 FROM chapter_comments WHERE user_id=$1 AND is_private)
       OR EXISTS(SELECT 1 FROM chapter_reactions WHERE user_id=$1 AND is_private) AS private_content`,[uid]);
     privateContent ||= row?.private_content === true;

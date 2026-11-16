@@ -13,6 +13,7 @@ import { keys, t as tr } from '@/lib/i18n';
 interface HistoryRow {
   book_id: string; series_id: string; page: number; completed: boolean; created_at: string;
   book_title: string; series_title: string;
+  remote?: boolean;
 }
 
 // Two of these three are translatable strings reaching `tr()` through a variable, so they are declared;
@@ -70,11 +71,11 @@ export default function HistoryPage() {
               <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {g.items.map((r) => (
                   <div key={r.book_id} className="card flex items-center gap-3 px-3 py-2.5 transition-colors hover:border-ink-600">
-                    <Link href={`/series/?id=${r.series_id}`} className="h-16 w-11 shrink-0 overflow-hidden rounded-lg border border-ink-700">
-                      <Img src={img.bookThumb(r.book_id)} alt="" className="h-full w-full" />
+                    <Link href={r.remote ? '/remote-library/' : `/series/?id=${r.series_id}`} className="h-16 w-11 shrink-0 overflow-hidden rounded-lg border border-ink-700">
+                      {r.remote ? <span className="grid h-full place-items-center" aria-label="Remote book">📖</span> : <Img src={img.bookThumb(r.book_id)} alt="" className="h-full w-full" />}
                     </Link>
                     <div className="min-w-0 flex-1">
-                      <Link href={`/series/?id=${r.series_id}`} className="block truncate text-sm font-medium text-fog-100">
+                      <Link href={r.remote ? '/remote-library/' : `/series/?id=${r.series_id}`} className="block truncate text-sm font-medium text-fog-100">
                         {r.series_title || tr('Unknown series')}
                       </Link>
                       <p className="truncate text-[11px] text-fog-500">
@@ -85,7 +86,7 @@ export default function HistoryPage() {
                           : <span className="ms-1.5 text-accent">{tr('page {n}', { n: r.page })}</span>}
                       </p>
                     </div>
-                    <Link href={`/reader/?book=${r.book_id}`} aria-label={tr('Open in reader')}
+                    <Link href={r.remote ? '/remote-library/' : `/reader/?book=${r.book_id}`} aria-label={r.remote ? 'Reconnect remote library to resume' : tr('Open in reader')}
                       className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-accent-soft text-accent transition hover:bg-accent hover:text-black">
                       <IcPlay width={15} height={15} />
                     </Link>

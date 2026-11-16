@@ -116,6 +116,11 @@ sites' terms and your local law.
 
 **Your library**
 
+- **Device-side remote libraries** — read CBZ and images from provider-synced folders
+  (including Proton Drive) without uploading them to the server. Advanced direct
+  Google Drive and Dropbox connectors are also available. See
+  [setup, privacy boundaries, and current limits](docs/remote-libraries.md).
+
 - **Manga title artwork** — Home and series heroes show matching title logos or styled lettering. Admins can
   upload their own artwork, find verified Wikimedia logos, or review lettering cut from a cover with the
   [optional local CPU service](services/title-extractor/README.md). Restore/Erase brushes repair a private preview

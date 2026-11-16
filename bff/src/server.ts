@@ -3,6 +3,7 @@
 // reading anything, but that order is an accident this line stops relying on. A no-op on a server.
 import './lib/desktop';
 import { uploadSeriesRoutes } from './routes/upload';
+import { remoteReadingRoutes } from './routes/remoteReading';
 import Fastify from 'fastify';
 import { APP_ROUTER_OPTIONS } from './lib/httpLimits';
 import cookie from '@fastify/cookie';
@@ -294,6 +295,7 @@ async function main() {
   await app.register(imageRoutes);
   await app.register(personalRoutes);
   await app.register(privateLibraryRoutes);
+  await app.register(remoteReadingRoutes);
   await app.register(recommendationRoutes);
   await app.register(discoveryHubRoutes);
   await app.register(downloadRoutes);

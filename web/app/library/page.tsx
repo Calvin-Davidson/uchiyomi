@@ -589,7 +589,10 @@ function LibraryInner() {
         {/* The title gives way before the keys do: with the admin's import a fourth round key, "Bibliothèque" and
             "Библиотека" pushed the row 25-29 px past a 320 px screen. */}
         <div className="flex items-center justify-between gap-3 lg:pt-6">
-          <h1 className="min-w-0 truncate font-display text-2xl font-bold tracking-tight lg:text-3xl">{tr('Library')}</h1>
+          <div className="min-w-0">
+            <h1 className="truncate font-display text-2xl font-bold tracking-tight lg:text-3xl">{tr('Library')}</h1>
+            <Link href="/remote-library/" className="text-sm text-accent">Remote libraries</Link>
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             {/* v0.55.4 (#158): the import, for an admin, where "+" and the top bar's Discover add series -- it was four
                 taps deep in Admin → Sources. A labelled key on a wide screen; on a phone a round key among the others. */}
